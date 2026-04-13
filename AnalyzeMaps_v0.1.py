@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# Automated 3D Denso Map Extractor to CSV
+# Automated 3D Denso Map Extractor to CSV (Resilient Edition)
 # @category ECU_ReverseEngineering
 # @runtime Jython
 
@@ -16,7 +16,6 @@ def extract_3d_maps():
     target_addr = toAddr(0x000080e4)
     refs = getReferencesTo(target_addr)
     
-    # 1. Ask the user where to physically save the CSV
     try:
         save_file = askFile("Save Denso Mappack (CSV)", "Save")
         filepath = save_file.getAbsolutePath()
@@ -26,11 +25,11 @@ def extract_3d_maps():
         print("Operation cancelled by the user.")
         return
 
-    # Open file in write mode
     f = open(filepath, "w")
     f.write("Wrapper_Addr,Size_Y,Size_X,Axis_Y_Addr,Axis_X_Addr,Map_Z_Addr\n")
     
-    print("Starting Mass Extraction and saving to: " + filepath)
+    print("Starting Resilient Mass Extraction...")
+    print("Saving to: " + filepath)
     print("----------------------------------------------------------------")
     
     map_count = 0
@@ -38,69 +37,67 @@ def extract_3d_maps():
     for ref in refs:
         if ref.getReferenceType().isCall():
             call_addr = ref.getFromAddress()
-            
             instr = listing.getInstructionAt(call_addr)
-            literal_ptr = None
             
-            # Search for the literal pool (the "box" containing the pointer)
-            for _ in range(6):
+            valid_map_found = False
+            
+            # Look back up to 20 instructions
+            for _ in range(20):
                 instr = instr.getPrevious()
                 if not instr:
                     break
+                    
                 data_refs = instr.getReferencesFrom()
                 for d_ref in data_refs:
                     if d_ref.isMemoryReference() and d_ref.getReferenceType().isData():
-                        literal_ptr = d_ref.getToAddress()
-                        break
-                if literal_ptr:
-                    break
-            
-            if literal_ptr:
-                # PREVENT MemoryAccessException: Skip reading if the literal pointer itself is in RAM
-                if literal_ptr.getOffset() >= 0xFFFF0000:
-                    continue
-                    
-                try:
-                    # THE MAGIC TRICK! Read the address INSIDE the literal pool
-                    real_config_offset = memory.getInt(literal_ptr) & 0xFFFFFFFF
-                    real_config_addr = toAddr(real_config_offset)
-                    
-                    # Skip if the actual configuration structure is in RAM or is null
-                    if real_config_offset >= 0xFFFF0000 or real_config_offset == 0:
-                        continue
+                        temp_ptr = d_ref.getToAddress()
                         
-                    # READ THE REAL STRUCTURE
-                    # offset 0x00: short Size Y
-                    # offset 0x02: short Size X
-                    # offset 0x04: int Pointer Axis Y
-                    # offset 0x08: int Pointer Axis X
-                    # offset 0x0C: int Pointer Map Z
-                    
-                    size_y = memory.getShort(real_config_addr) & 0xFFFF
-                    size_x = memory.getShort(real_config_addr.add(2)) & 0xFFFF
-                    
-                    ptr_y = memory.getInt(real_config_addr.add(4)) & 0xFFFFFFFF
-                    ptr_x = memory.getInt(real_config_addr.add(8)) & 0xFFFFFFFF
-                    ptr_z = memory.getInt(real_config_addr.add(12)) & 0xFFFFFFFF
-                    
-                    # Sanity filter: Discard "garbage" with invalid dimensions (must be between 1 and 64)
-                    if 0 < size_x <= 64 and 0 < size_y <= 64:
-                        linea_csv = "{:08X},{},{},{:08X},{:08X},{:08X}\n".format(
-                            call_addr.getOffset(), size_y, size_x, ptr_y, ptr_x, ptr_z
-                        )
-                        f.write(linea_csv)
-                        print("Map Extracted OK -> Map_Addr: {:08X} | Size: {}x{}".format(ptr_z, size_y, size_x))
-                        map_count += 1
-                        
-                except Exception as e:
-                    # Python exceptions
-                    pass
-                except JavaException as e:
-                    # Catch deep Ghidra Java memory exceptions to prevent crashes
-                    pass
+                        # Ignore RAM pointers immediately
+                        if temp_ptr.getOffset() >= 0xFFFF0000:
+                            continue
+                            
+                        try:
+                            # Dereference the literal pool
+                            real_config_offset = memory.getInt(temp_ptr) & 0xFFFFFFFF
+                            
+                            # Ensure the real struct is in ROM
+                            if real_config_offset >= 0xFFFF0000 or real_config_offset == 0:
+                                continue
+                                
+                            real_config_addr = toAddr(real_config_offset)
+                            
+                            # Read dimensions
+                            size_y = memory.getShort(real_config_addr) & 0xFFFF
+                            size_x = memory.getShort(real_config_addr.add(2)) & 0xFFFF
+                            
+                            # STRICT SANITY CHECK (This filters out the garbage/noise)
+                            if 0 < size_x <= 64 and 0 < size_y <= 64:
+                                ptr_y = memory.getInt(real_config_addr.add(4)) & 0xFFFFFFFF
+                                ptr_x = memory.getInt(real_config_addr.add(8)) & 0xFFFFFFFF
+                                ptr_z = memory.getInt(real_config_addr.add(12)) & 0xFFFFFFFF
+                                
+                                # BOOM! We got a valid map
+                                linea_csv = "{:08X},{},{},{:08X},{:08X},{:08X}\n".format(
+                                    call_addr.getOffset(), size_y, size_x, ptr_y, ptr_x, ptr_z
+                                )
+                                f.write(linea_csv)
+                                print("Map Extracted OK -> Wrapper: {:08X} | Map_Addr: {:08X} | Size: {}x{}".format(
+                                    call_addr.getOffset(), ptr_z, size_y, size_x))
+                                
+                                map_count += 1
+                                valid_map_found = True
+                                break # Break the reference loop
+                                
+                        except Exception as e:
+                            pass
+                        except JavaException as e:
+                            pass
+                            
+                if valid_map_found:
+                    break # Break the instruction backward loop
 
     f.close()
     print("----------------------------------------------------------------")
-    print("SUCCESS! {} 3D maps exported to file: {}".format(map_count, filepath))
+    print("SUCCESS! {} 3D maps exported.".format(map_count))
 
 extract_3d_maps()
