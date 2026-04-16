@@ -1,47 +1,49 @@
-import pandas as pd
-import numpy as np
-import matplotlib.pyplot as plt
-import struct
 import sys
-import tkinter as tk
-from tkinter import ttk, messagebox
-from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+import struct
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from mpl_toolkits.mplot3d import proj3d
+
+from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
+                             QListWidget, QLineEdit, QPushButton, QLabel, QStackedWidget,
+                             QTableWidget, QTableWidgetItem, QGroupBox, QRadioButton,
+                             QFormLayout, QDialog, QDialogButtonBox, QDoubleSpinBox)
+from PyQt6.QtCore import Qt
 
 # ================= CONFIGURATION =================
 CSV_FILE = "3d_maps_review.csv"
 ORI_FILE = "115_e3a4d17c28.bin"       
 # =================================================
 
-class DensoViewerApp:
-    def __init__(self, root):
-        self.root = root
-        self.root.title("Denso Map Viewer 3D")
-        self.root.geometry("1400x850")
+class DensoViewerApp(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("Denso Map Viewer 3D")
+        self.resize(1400, 850)
         
-        # --- Protocolo de cierre seguro ---
-        self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
-        
-        # --- Data State Variables ---
+        # --- Variables de Estado ---
         self.df = pd.DataFrame()
         self.current_index = 0
         self.total_maps = 0
-        self.factor_z = tk.DoubleVar(value=0.0025)
-        self.offset_z = tk.DoubleVar(value=0.0)
-        self.z_format = tk.StringVar(value='>H')
-        self.ax_format = tk.StringVar(value='f')
-        self.rot_mode = tk.StringVar(value='Z') 
+        
+        self.factor_z = 0.0025
+        self.offset_z = 0.0
+        self.z_format = '>H'
+        self.ax_format = 'f'
+        self.rot_mode = 'Z' 
         self.view_mode = '3d'
         
-        # --- Mouse Tracking & Zoom Variables ---
+        # Variables de Cámara y Zoom persistentes
         self.dragging = False
         self.mouse_x = 0
         self.mouse_y = 0
         self.start_elev = 35
         self.start_azim = 135
-        self.cam_dist = 10.0 
+        self.cam_dist = 10.0  # Zoom para versiones antiguas de Matplotlib
+        self.cam_zoom = 1.0   # Zoom para versiones modernas de Matplotlib
         
-        # Internal map data for hover tracking
         self.real_axis_x = []
         self.real_axis_y = []
         self.x_flat = []
@@ -49,116 +51,119 @@ class DensoViewerApp:
         self.z_flat = []
         
         self.load_data()
-        self.build_ui()
+        self.init_ui()
         self.draw_map()
-
-    def on_closing(self):
-        """Cierra todos los hilos y libera la terminal"""
-        plt.close('all')
-        self.root.quit()
-        self.root.destroy()
-        sys.exit()
 
     def load_data(self):
         try:
             self.df = pd.read_csv(CSV_FILE, dtype=str)
             self.total_maps = len(self.df)
         except Exception as e:
-            messagebox.showerror("Error", f"Could not read CSV:\n{e}")
+            print(f"Error reading CSV: {e}")
             sys.exit()
 
-    def build_ui(self):
-        # MAIN LAYOUT
-        self.left_panel = tk.Frame(self.root, width=250, bg="#f0f0f0", padx=10, pady=10)
-        self.left_panel.pack(side=tk.LEFT, fill=tk.Y)
+    def init_ui(self):
+        # Layout Principal
+        central_widget = QWidget()
+        self.setCentralWidget(central_widget)
+        main_layout = QHBoxLayout(central_widget)
         
-        self.right_panel = tk.Frame(self.root)
-        self.right_panel.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True)
+        # --- PANEL IZQUIERDO ---
+        left_panel = QVBoxLayout()
+        left_panel.addWidget(QLabel("<b>Search Map Address:</b>"))
         
-        # --- LEFT PANEL (Search & List) ---
-        tk.Label(self.left_panel, text="Search Map Address:", bg="#f0f0f0", font=("Arial", 10, "bold")).pack(anchor=tk.W)
-        self.search_var = tk.StringVar()
-        self.search_var.trace("w", self.update_list)
-        self.search_entry = tk.Entry(self.left_panel, textvariable=self.search_var, font=("Arial", 11))
-        self.search_entry.pack(fill=tk.X, pady=(0, 10))
+        self.search_box = QLineEdit()
+        self.search_box.textChanged.connect(self.update_list)
+        left_panel.addWidget(self.search_box)
         
-        list_frame = tk.Frame(self.left_panel)
-        list_frame.pack(fill=tk.BOTH, expand=True)
-        scrollbar = tk.Scrollbar(list_frame)
-        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-        self.map_listbox = tk.Listbox(list_frame, yscrollcommand=scrollbar.set, font=("Consolas", 10))
-        self.map_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        scrollbar.config(command=self.map_listbox.yview)
+        self.map_listbox = QListWidget()
+        self.map_listbox.itemSelectionChanged.connect(self.on_list_select)
+        left_panel.addWidget(self.map_listbox)
         
-        self.map_listbox.bind("<<ListboxSelect>>", self.on_list_select)
-        self.filtered_indices = []
-        self.update_list() 
+        main_layout.addLayout(left_panel, 1) 
         
-        # --- RIGHT PANEL (Toolbar) ---
-        self.toolbar = tk.Frame(self.right_panel, bg="#e0e0e0", pady=5, padx=10)
-        self.toolbar.pack(side=tk.TOP, fill=tk.X)
+        # --- PANEL DERECHO ---
+        right_panel = QVBoxLayout()
         
-        tk.Button(self.toolbar, text="<- Prev Map", command=self.prev_map, width=12).pack(side=tk.LEFT, padx=5)
-        tk.Button(self.toolbar, text="Next Map ->", command=self.next_map, width=12).pack(side=tk.LEFT, padx=5)
-        tk.Button(self.toolbar, text="⚙ Settings", command=self.open_settings, bg="#d9edf7").pack(side=tk.RIGHT, padx=5)
-        tk.Button(self.toolbar, text="Toggle 3D / Table", command=self.toggle_view, bg="#dff0d8").pack(side=tk.RIGHT, padx=5)
+        # Barra de Herramientas
+        toolbar_layout = QHBoxLayout()
         
-        self.lbl_title = tk.Label(self.toolbar, text="Map Info", bg="#e0e0e0", font=("Arial", 12, "bold"))
-        self.lbl_title.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        self.lbl_title = QLabel("Map Info")
+        self.lbl_title.setStyleSheet("font-size: 14px; font-weight: bold;")
+        toolbar_layout.addWidget(self.lbl_title)
         
-        # --- CONTENT AREA (Canvas & Table) ---
-        self.content_frame = tk.Frame(self.right_panel)
-        self.content_frame.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+        toolbar_layout.addStretch()
         
+        btn_prev = QPushButton("<- Prev Map")
+        btn_prev.clicked.connect(self.prev_map)
+        toolbar_layout.addWidget(btn_prev)
+        
+        btn_next = QPushButton("Next Map ->")
+        btn_next.clicked.connect(self.next_map)
+        toolbar_layout.addWidget(btn_next)
+        
+        btn_toggle = QPushButton("Toggle 3D / Table")
+        btn_toggle.clicked.connect(self.toggle_view)
+        toolbar_layout.addWidget(btn_toggle)
+        
+        btn_settings = QPushButton("⚙ Settings")
+        btn_settings.clicked.connect(self.open_settings)
+        toolbar_layout.addWidget(btn_settings)
+        
+        right_panel.addLayout(toolbar_layout)
+        
+        # Stacked Widget (Alternar entre Canvas 3D y Tabla)
+        self.stacked_widget = QStackedWidget()
+        
+        # 1. Matplotlib Canvas
         self.fig = plt.figure(figsize=(8, 6))
         self.fig.subplots_adjust(left=0.01, right=0.99, bottom=0.05, top=0.95)
         self.ax3d = self.fig.add_subplot(111, projection='3d')
+        self.ax3d.set_navigate(False)
         
-        self.canvas = FigureCanvasTkAgg(self.fig, master=self.content_frame)
-        self.canvas_widget = self.canvas.get_tk_widget()
-        self.canvas_widget.pack(fill=tk.BOTH, expand=True)
+        self.canvas = FigureCanvas(self.fig)
+        self.canvas.setFocusPolicy(Qt.FocusPolicy.StrongFocus) # Asegura que capture eventos de rueda
         
-        # Custom Interaction Bindings
-        self.ax3d.set_navigate(False) 
+        # Eventos nativos de Matplotlib (funcionan en cualquier SO)
         self.canvas.mpl_connect('button_press_event', self.on_mouse_press)
         self.canvas.mpl_connect('button_release_event', self.on_mouse_release)
         self.canvas.mpl_connect('motion_notify_event', self.on_mouse_move)
         self.canvas.mpl_connect('scroll_event', self.on_scroll)
         
-        # --- BOTTOM STATUS BAR (Coordinates) ---
-        self.status_bar = tk.Frame(self.right_panel, bg="#333", pady=5)
-        self.status_bar.pack(side=tk.BOTTOM, fill=tk.X)
-        self.lbl_coords = tk.Label(self.status_bar, text="Hover over the graph to see values...", fg="white", bg="#333", font=("Arial", 12, "bold"))
-        self.lbl_coords.pack()
+        self.stacked_widget.addWidget(self.canvas)
         
-        # --- TABLE VIEW ---
-        self.tree_frame = tk.Frame(self.content_frame)
-        self.tree_scroll_y = tk.Scrollbar(self.tree_frame)
-        self.tree_scroll_y.pack(side=tk.RIGHT, fill=tk.Y)
-        self.tree_scroll_x = tk.Scrollbar(self.tree_frame, orient=tk.HORIZONTAL)
-        self.tree_scroll_x.pack(side=tk.BOTTOM, fill=tk.X)
+        # 2. Qt Table
+        self.table = QTableWidget()
+        self.stacked_widget.addWidget(self.table)
         
-        self.tree = ttk.Treeview(self.tree_frame, yscrollcommand=self.tree_scroll_y.set, xscrollcommand=self.tree_scroll_x.set)
-        self.tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        self.tree_scroll_y.config(command=self.tree.yview)
-        self.tree_scroll_x.config(command=self.tree.xview)
+        right_panel.addWidget(self.stacked_widget, 1)
+        
+        # Barra de estado
+        self.status_lbl = QLabel("Hover over the graph to see values...")
+        self.status_lbl.setStyleSheet("background-color: #222; color: #FFF; font-weight: bold; font-size: 14px; padding: 8px; border-radius: 4px;")
+        right_panel.addWidget(self.status_lbl)
+        
+        main_layout.addLayout(right_panel, 4) 
+        
+        self.filtered_indices = []
+        self.update_list()
 
     # --- UI LOGIC ---
-    def update_list(self, *args):
-        search_term = self.search_var.get().lower()
-        self.map_listbox.delete(0, tk.END)
+    def update_list(self):
+        search_term = self.search_box.text().lower()
+        self.map_listbox.clear()
         self.filtered_indices = []
         
         for idx, row in self.df.iterrows():
             addr = str(row['Map_Z_Addr']).strip()
             if search_term in addr.lower():
-                self.map_listbox.insert(tk.END, f"Map {idx+1}: {addr}")
+                self.map_listbox.addItem(f"Map {idx+1}: {addr}")
                 self.filtered_indices.append(idx)
 
-    def on_list_select(self, event):
-        selection = self.map_listbox.curselection()
-        if selection:
-            visual_idx = selection[0]
+    def on_list_select(self):
+        items = self.map_listbox.selectedIndexes()
+        if items:
+            visual_idx = items[0].row()
             self.current_index = self.filtered_indices[visual_idx]
             self.draw_map()
 
@@ -177,73 +182,121 @@ class DensoViewerApp:
     def sync_listbox_selection(self):
         if self.current_index in self.filtered_indices:
             vis_idx = self.filtered_indices.index(self.current_index)
-            self.map_listbox.selection_clear(0, tk.END)
-            self.map_listbox.selection_set(vis_idx)
-            self.map_listbox.see(vis_idx)
+            self.map_listbox.setCurrentRow(vis_idx)
 
     def toggle_view(self):
         if self.view_mode == '3d':
             self.view_mode = 'table'
-            self.canvas_widget.pack_forget()
-            self.status_bar.pack_forget()
-            self.tree_frame.pack(fill=tk.BOTH, expand=True)
+            self.stacked_widget.setCurrentIndex(1)
         else:
             self.view_mode = '3d'
-            self.tree_frame.pack_forget()
-            self.canvas_widget.pack(fill=tk.BOTH, expand=True)
-            self.status_bar.pack(side=tk.BOTTOM, fill=tk.X)
+            self.stacked_widget.setCurrentIndex(0)
         self.draw_map()
 
     def open_settings(self):
-        sett_win = tk.Toplevel(self.root)
-        sett_win.title("Configuration")
-        sett_win.geometry("380x420")
-        sett_win.attributes('-topmost', True)
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Configuration")
+        dialog.resize(350, 400)
+        layout = QVBoxLayout(dialog)
         
-        lf_z = tk.LabelFrame(sett_win, text="Z Data Format", padx=10, pady=5)
-        lf_z.pack(fill=tk.X, padx=10, pady=5)
-        tk.Radiobutton(lf_z, text="16-bit Big Endian (>H)", variable=self.z_format, value='>H').pack(anchor=tk.W)
-        tk.Radiobutton(lf_z, text="16-bit Little Endian (<H)", variable=self.z_format, value='<H').pack(anchor=tk.W)
-        tk.Radiobutton(lf_z, text="8-bit Unsigned (>B)", variable=self.z_format, value='>B').pack(anchor=tk.W)
+        # Z Format
+        gb_z = QGroupBox("Z Data Format")
+        vbox_z = QVBoxLayout()
+        rb_z1 = QRadioButton("16-bit Big Endian (>H)")
+        rb_z2 = QRadioButton("16-bit Little Endian (<H)")
+        rb_z3 = QRadioButton("8-bit Unsigned (>B)")
+        if self.z_format == '>H': rb_z1.setChecked(True)
+        elif self.z_format == '<H': rb_z2.setChecked(True)
+        else: rb_z3.setChecked(True)
+        vbox_z.addWidget(rb_z1); vbox_z.addWidget(rb_z2); vbox_z.addWidget(rb_z3)
+        gb_z.setLayout(vbox_z)
+        layout.addWidget(gb_z)
         
-        lf_a = tk.LabelFrame(sett_win, text="Axis X/Y Format", padx=10, pady=5)
-        lf_a.pack(fill=tk.X, padx=10, pady=5)
-        tk.Radiobutton(lf_a, text="32-bit Float (f)", variable=self.ax_format, value='f').pack(anchor=tk.W)
-        tk.Radiobutton(lf_a, text="16-bit Int (H)", variable=self.ax_format, value='H').pack(anchor=tk.W)
+        # Axis Format
+        gb_a = QGroupBox("Axis X/Y Format")
+        vbox_a = QVBoxLayout()
+        rb_a1 = QRadioButton("32-bit Float (f)")
+        rb_a2 = QRadioButton("16-bit Int (H)")
+        if self.ax_format == 'f': rb_a1.setChecked(True)
+        else: rb_a2.setChecked(True)
+        vbox_a.addWidget(rb_a1); vbox_a.addWidget(rb_a2)
+        gb_a.setLayout(vbox_a)
+        layout.addWidget(gb_a)
         
-        lf_m = tk.LabelFrame(sett_win, text="Math", padx=10, pady=5)
-        lf_m.pack(fill=tk.X, padx=10, pady=5)
-        tk.Label(lf_m, text="Factor Z:").grid(row=0, column=0, sticky=tk.W)
-        tk.Entry(lf_m, textvariable=self.factor_z, width=15).grid(row=0, column=1, padx=5)
-        tk.Label(lf_m, text="Offset Z:").grid(row=1, column=0, sticky=tk.W, pady=5)
-        tk.Entry(lf_m, textvariable=self.offset_z, width=15).grid(row=1, column=1, padx=5)
+        # Rotation
+        gb_r = QGroupBox("Mouse Rotation Mode")
+        vbox_r = QVBoxLayout()
+        rb_r1 = QRadioButton("Z-Axis Only (WinOLS Azimuth)")
+        rb_r2 = QRadioButton("WinOLS Style (Azimuth & Tilt)")
+        rb_r3 = QRadioButton("Tilt Only (Elevation)")
+        if self.rot_mode == 'Z': rb_r1.setChecked(True)
+        elif self.rot_mode == 'WinOLS': rb_r2.setChecked(True)
+        else: rb_r3.setChecked(True)
+        vbox_r.addWidget(rb_r1); vbox_r.addWidget(rb_r2); vbox_r.addWidget(rb_r3)
+        gb_r.setLayout(vbox_r)
+        layout.addWidget(gb_r)
         
-        lf_r = tk.LabelFrame(sett_win, text="Mouse Rotation Mode", padx=10, pady=5)
-        lf_r.pack(fill=tk.X, padx=10, pady=5)
-        tk.Radiobutton(lf_r, text="Z-Axis Only (Azimuth)", variable=self.rot_mode, value='Z').pack(anchor=tk.W)
-        tk.Radiobutton(lf_r, text="WinOLS Style (Azimuth & Tilt)", variable=self.rot_mode, value='WinOLS').pack(anchor=tk.W)
-        tk.Radiobutton(lf_r, text="Tilt Only (Elevation)", variable=self.rot_mode, value='Tilt').pack(anchor=tk.W)
+        # Math
+        gb_m = QGroupBox("Math")
+        form_m = QFormLayout()
+        spin_f = QDoubleSpinBox()
+        spin_f.setDecimals(5)
+        spin_f.setSingleStep(0.001)
+        spin_f.setRange(-1000, 1000)
+        spin_f.setValue(self.factor_z)
         
-        tk.Button(sett_win, text="Apply & Redraw", command=self.draw_map, bg="#5cb85c", fg="white", font=("Arial", 10, "bold")).pack(pady=10)
+        spin_o = QDoubleSpinBox()
+        spin_o.setRange(-10000, 10000)
+        spin_o.setValue(self.offset_z)
+        
+        form_m.addRow("Factor Z:", spin_f)
+        form_m.addRow("Offset Z:", spin_o)
+        gb_m.setLayout(form_m)
+        layout.addWidget(gb_m)
+        
+        # Botones
+        btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        btns.accepted.connect(dialog.accept)
+        btns.rejected.connect(dialog.reject)
+        layout.addWidget(btns)
+        
+        if dialog.exec():
+            if rb_z1.isChecked(): self.z_format = '>H'
+            elif rb_z2.isChecked(): self.z_format = '<H'
+            else: self.z_format = '>B'
+            
+            if rb_a1.isChecked(): self.ax_format = 'f'
+            else: self.ax_format = 'H'
+            
+            if rb_r1.isChecked(): self.rot_mode = 'Z'
+            elif rb_r2.isChecked(): self.rot_mode = 'WinOLS'
+            else: self.rot_mode = 'Tilt'
+            
+            self.factor_z = spin_f.value()
+            self.offset_z = spin_o.value()
+            
+            self.draw_map()
 
-    # --- CUSTOM MOUSE INTERACTION (ZOOM & HOVER) ---
+    # --- MATPLOTLIB EVENTS (ZOOM & HOVER) ---
     def on_scroll(self, event):
         """Zoom robusto sin bloqueos de ejes."""
-        if event.button == 'up':
-            zoom_factor = 1.15  # Acercar
-        elif event.button == 'down':
-            zoom_factor = 0.85  # Alejar
-        else:
-            return
-
+        if self.view_mode != '3d': return
+        
+        zoom_in = event.step > 0
+        
+        # Ajustamos la distancia física
+        factor = 0.85 if zoom_in else 1.15
+        self.cam_dist = max(1.0, min(self.cam_dist * factor, 50.0))
+        self.ax3d.dist = self.cam_dist
+        
+        # Ajustamos el nivel de zoom matemático
+        z_factor = 1.15 if zoom_in else 0.85
+        self.cam_zoom = max(0.1, min(self.cam_zoom * z_factor, 10.0))
+        
         try:
-            # Modern Matplotlib (3.6+)
-            current_zoom = self.ax3d.get_zoom()
-            self.ax3d.set_zoom(current_zoom * zoom_factor)
+            self.ax3d.set_zoom(self.cam_zoom)
         except AttributeError:
-            # Older Matplotlib
-            self.cam_dist /= zoom_factor
-            self.ax3d.dist = max(1.0, min(self.cam_dist, 50.0))
+            pass
             
         self.canvas.draw_idle()
 
@@ -259,37 +312,32 @@ class DensoViewerApp:
         self.dragging = False
 
     def on_mouse_move(self, event):
-        # 1. Rotación si arrastramos el ratón (incluso fuera del area de dibujo del eje 3d)
         if self.dragging:
-            # Nos aseguramos de que el evento x/y no sea None
             if event.x is None or event.y is None: return
             
             dx = event.x - self.mouse_x
             dy = event.y - self.mouse_y
             sens = 0.4
-            mode = self.rot_mode.get()
             
-            if mode == 'WinOLS':
-                new_elev = self.start_elev - (dy * sens) 
+            if self.rot_mode == 'WinOLS':
+                new_elev = max(-90, min(90, self.start_elev - (dy * sens)))
                 new_azim = self.start_azim - (dx * sens)
-                new_elev = max(-90, min(90, new_elev))
                 self.ax3d.view_init(elev=new_elev, azim=new_azim)
-            elif mode == 'Z':
+            elif self.rot_mode == 'Z':
                 new_azim = self.start_azim - (dx * sens)
                 self.ax3d.view_init(elev=self.start_elev, azim=new_azim)
-            elif mode == 'Tilt':
-                new_elev = self.start_elev - (dy * sens)
-                new_elev = max(-90, min(90, new_elev))
+            elif self.rot_mode == 'Tilt':
+                new_elev = max(-90, min(90, self.start_elev - (dy * sens)))
                 self.ax3d.view_init(elev=new_elev, azim=self.start_azim)
                 
             self.canvas.draw_idle()
             return
             
-        # 2. Tracking de coordenadas (Bolita roja)
-        if event.inaxes != self.ax3d or self.dragging or len(self.z_flat) == 0:
+        # Hover Tracking
+        if getattr(event, 'inaxes', None) != self.ax3d or self.dragging or len(self.z_flat) == 0:
             if hasattr(self, 'cursor_marker') and self.cursor_marker.get_visible():
                 self.cursor_marker.set_visible(False)
-                self.lbl_coords.config(text="Hover over the graph to see values...")
+                self.status_lbl.setText("Hover over the graph to see values...")
                 self.canvas.draw_idle()
             return
 
@@ -312,12 +360,12 @@ class DensoViewerApp:
                 rx = self.real_axis_x[best_x]
                 ry = self.real_axis_y[best_y]
                 
-                lbl = f"Point: X = {rx:g}   |   Y = {ry:g}   |   Z = {best_z:.2f}"
-                self.lbl_coords.config(text=lbl)
+                lbl = f"Target Point: X = {rx:g}   |   Y = {ry:g}   |   Z = {best_z:.2f}"
+                self.status_lbl.setText(lbl)
                 self.canvas.draw_idle()
             else:
                 self.cursor_marker.set_visible(False)
-                self.lbl_coords.config(text="Hover over the graph to see values...")
+                self.status_lbl.setText("Hover over the graph to see values...")
                 self.canvas.draw_idle()
         except: pass
 
@@ -345,20 +393,18 @@ class DensoViewerApp:
         axis_x_hex = str(row['Axis_X_Addr']).strip()
         axis_y_hex = str(row['Axis_Y_Addr']).strip()
         
-        z_fmt = self.z_format.get()
-        a_fmt = self.ax_format.get()
-        endian = z_fmt[0]
-        bytes_per_value = 2 if 'h' in z_fmt.lower() else 1
+        endian = self.z_format[0]
+        bytes_per_value = 2 if 'h' in self.z_format.lower() else 1
         
         with open(ORI_FILE, "rb") as f:
             f.seek(int(map_z_hex, 16))
             raw_z_data = f.read(size_y * size_x * bytes_per_value)
             
-        z_values = struct.unpack(f"{endian}{size_y * size_x}{z_fmt[-1]}", raw_z_data)
+        z_values = struct.unpack(f"{endian}{size_y * size_x}{self.z_format[-1]}", raw_z_data)
         matrix_z = np.array(z_values).reshape((size_y, size_x))
         
-        axis_x = self.read_axis(axis_x_hex, size_x, endian, a_fmt)
-        axis_y = self.read_axis(axis_y_hex, size_y, endian, a_fmt)
+        axis_x = self.read_axis(axis_x_hex, size_x, endian, self.ax_format)
+        axis_y = self.read_axis(axis_y_hex, size_y, endian, self.ax_format)
         
         return matrix_z, axis_x, axis_y, size_y, size_x, map_z_hex
 
@@ -366,8 +412,7 @@ class DensoViewerApp:
     def draw_map(self):
         try:
             raw_matrix, axis_x, axis_y, size_y, size_x, map_z_hex = self.read_map()
-            
-            matrix_z = (raw_matrix * self.factor_z.get()) + self.offset_z.get()
+            matrix_z = (raw_matrix * self.factor_z) + self.offset_z
             
             clean_axis_x = [str(round(v, 2)).rstrip('0').rstrip('.') for v in axis_x]
             clean_axis_y = [str(round(v, 2)).rstrip('0').rstrip('.') for v in axis_y]
@@ -375,8 +420,8 @@ class DensoViewerApp:
             self.real_axis_x = axis_x
             self.real_axis_y = axis_y
             
-            title = f"Map {self.current_index + 1}/{self.total_maps} | Addr: {map_z_hex}"
-            self.lbl_title.config(text=title)
+            title = f"Map {self.current_index + 1}/{self.total_maps} | Addr: {map_z_hex} | Factor: {self.factor_z}"
+            self.lbl_title.setText(title)
 
             if self.view_mode == '3d':
                 self.ax3d.clear()
@@ -411,36 +456,42 @@ class DensoViewerApp:
                 
                 self.ax3d.view_init(elev=self.start_elev, azim=self.start_azim)
                 
-                # Restaurar el nivel de zoom actual para que no dé un salto brusco
+                # Aplicamos el Zoom almacenado
+                self.ax3d.dist = self.cam_dist
                 try:
-                    self.ax3d.set_zoom(self.ax3d.get_zoom())
+                    self.ax3d.set_zoom(self.cam_zoom)
                 except AttributeError:
-                    self.ax3d.dist = self.cam_dist
+                    pass
 
                 self.canvas.draw_idle()
                 
             elif self.view_mode == 'table':
-                self.tree.delete(*self.tree.get_children()) 
-                self.tree["columns"] = ["Y/X"] + clean_axis_x
-                self.tree.heading("Y/X", text="Y \\ X")
-                self.tree.column("Y/X", width=60, anchor=tk.CENTER)
+                self.table.clear()
+                self.table.setRowCount(size_y)
+                self.table.setColumnCount(size_x)
                 
-                for col in clean_axis_x:
-                    self.tree.heading(col, text=col)
-                    self.tree.column(col, width=60, anchor=tk.CENTER)
+                self.table.setHorizontalHeaderLabels(clean_axis_x)
+                self.table.setVerticalHeaderLabels(clean_axis_y)
                 
-                for row_idx, row_data in enumerate(matrix_z):
-                    y_label = clean_axis_y[row_idx]
-                    values = [round(v, 2) for v in row_data]
-                    self.tree.insert("", "end", text="", values=[y_label] + values)
-                    
+                for i in range(size_y):
+                    for j in range(size_x):
+                        val = round(matrix_z[i, j], 2)
+                        item = QTableWidgetItem(str(val))
+                        item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                        self.table.setItem(i, j, item)
+                        
+                self.table.resizeColumnsToContents()
+                
         except Exception as e:
             if self.view_mode == '3d':
                 self.ax3d.clear()
                 self.ax3d.text2D(0.5, 0.5, f"Error:\n{str(e)}", transform=self.ax3d.transAxes, ha='center', color='red')
                 self.canvas.draw_idle()
+            else:
+                self.table.clear()
 
 if __name__ == "__main__":
-    root = tk.Tk()
-    app = DensoViewerApp(root)
-    root.mainloop()
+    app = QApplication(sys.argv)
+    viewer = DensoViewerApp()
+    viewer.show()
+    sys.exit(app.exec())
