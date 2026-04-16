@@ -19,6 +19,9 @@ class DensoViewerApp:
         self.root.title("Denso Map Viewer 3D")
         self.root.geometry("1400x850")
         
+        # --- Protocolo de cierre seguro ---
+        self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
+        
         # --- Data State Variables ---
         self.df = pd.DataFrame()
         self.current_index = 0
@@ -27,7 +30,7 @@ class DensoViewerApp:
         self.offset_z = tk.DoubleVar(value=0.0)
         self.z_format = tk.StringVar(value='>H')
         self.ax_format = tk.StringVar(value='f')
-        self.rot_mode = tk.StringVar(value='WinOLS')
+        self.rot_mode = tk.StringVar(value='Z') 
         self.view_mode = '3d'
         
         # --- Mouse Tracking & Zoom Variables ---
@@ -36,7 +39,7 @@ class DensoViewerApp:
         self.mouse_y = 0
         self.start_elev = 35
         self.start_azim = 135
-        self.cam_dist = 10.0 # Default camera distance
+        self.cam_dist = 10.0 
         
         # Internal map data for hover tracking
         self.real_axis_x = []
@@ -48,6 +51,13 @@ class DensoViewerApp:
         self.load_data()
         self.build_ui()
         self.draw_map()
+
+    def on_closing(self):
+        """Cierra todos los hilos y libera la terminal"""
+        plt.close('all')
+        self.root.quit()
+        self.root.destroy()
+        sys.exit()
 
     def load_data(self):
         try:
@@ -210,27 +220,35 @@ class DensoViewerApp:
         
         lf_r = tk.LabelFrame(sett_win, text="Mouse Rotation Mode", padx=10, pady=5)
         lf_r.pack(fill=tk.X, padx=10, pady=5)
-        tk.Radiobutton(lf_r, text="WinOLS Style (Azimuth & Tilt)", variable=self.rot_mode, value='WinOLS').pack(anchor=tk.W)
         tk.Radiobutton(lf_r, text="Z-Axis Only (Azimuth)", variable=self.rot_mode, value='Z').pack(anchor=tk.W)
+        tk.Radiobutton(lf_r, text="WinOLS Style (Azimuth & Tilt)", variable=self.rot_mode, value='WinOLS').pack(anchor=tk.W)
         tk.Radiobutton(lf_r, text="Tilt Only (Elevation)", variable=self.rot_mode, value='Tilt').pack(anchor=tk.W)
         
         tk.Button(sett_win, text="Apply & Redraw", command=self.draw_map, bg="#5cb85c", fg="white", font=("Arial", 10, "bold")).pack(pady=10)
 
     # --- CUSTOM MOUSE INTERACTION (ZOOM & HOVER) ---
     def on_scroll(self, event):
-        """Custom Camera Zoom without Axis Clipping"""
-        if event.inaxes != self.ax3d: return
-        
-        # Decrease distance to zoom in, increase to zoom out
-        scale = 0.9 if event.button == 'up' else 1.1
-        self.cam_dist = max(2.0, min(self.cam_dist * scale, 50.0))
-        
-        # Apply camera distance directly
-        self.ax3d.dist = self.cam_dist
+        """Zoom robusto sin bloqueos de ejes."""
+        if event.button == 'up':
+            zoom_factor = 1.15  # Acercar
+        elif event.button == 'down':
+            zoom_factor = 0.85  # Alejar
+        else:
+            return
+
+        try:
+            # Modern Matplotlib (3.6+)
+            current_zoom = self.ax3d.get_zoom()
+            self.ax3d.set_zoom(current_zoom * zoom_factor)
+        except AttributeError:
+            # Older Matplotlib
+            self.cam_dist /= zoom_factor
+            self.ax3d.dist = max(1.0, min(self.cam_dist, 50.0))
+            
         self.canvas.draw_idle()
 
     def on_mouse_press(self, event):
-        if event.inaxes != self.ax3d or event.button != 1: return
+        if event.button != 1: return
         self.dragging = True
         self.mouse_x = event.x
         self.mouse_y = event.y
@@ -241,18 +259,20 @@ class DensoViewerApp:
         self.dragging = False
 
     def on_mouse_move(self, event):
-        # 1. Handle Rotation if Dragging
-        if self.dragging and event.inaxes == self.ax3d:
+        # 1. Rotación si arrastramos el ratón (incluso fuera del area de dibujo del eje 3d)
+        if self.dragging:
+            # Nos aseguramos de que el evento x/y no sea None
+            if event.x is None or event.y is None: return
+            
             dx = event.x - self.mouse_x
             dy = event.y - self.mouse_y
             sens = 0.4
             mode = self.rot_mode.get()
             
             if mode == 'WinOLS':
-                # Inverted DY to match natural WinOLS tilt
                 new_elev = self.start_elev - (dy * sens) 
                 new_azim = self.start_azim - (dx * sens)
-                new_elev = max(-90, min(90, new_elev)) # Prevent flipping
+                new_elev = max(-90, min(90, new_elev))
                 self.ax3d.view_init(elev=new_elev, azim=new_azim)
             elif mode == 'Z':
                 new_azim = self.start_azim - (dx * sens)
@@ -265,7 +285,7 @@ class DensoViewerApp:
             self.canvas.draw_idle()
             return
             
-        # 2. Handle Cursor Hover Track (Red Ball)
+        # 2. Tracking de coordenadas (Bolita roja)
         if event.inaxes != self.ax3d or self.dragging or len(self.z_flat) == 0:
             if hasattr(self, 'cursor_marker') and self.cursor_marker.get_visible():
                 self.cursor_marker.set_visible(False)
@@ -274,26 +294,21 @@ class DensoViewerApp:
             return
 
         try:
-            # Project 3D points to 2D Screen
             xs, ys, _ = proj3d.proj_transform(self.x_flat, self.y_flat, self.z_flat, self.ax3d.get_proj())
-            # Convert to Display Pixels
             points2d = self.ax3d.transData.transform(np.column_stack([xs, ys]))
             
-            # Find closest point to mouse
             dists = (points2d[:, 0] - event.x)**2 + (points2d[:, 1] - event.y)**2
             min_idx = np.argmin(dists)
             
-            if dists[min_idx] < 600: # Threshold radius in pixels squared
+            if dists[min_idx] < 600: 
                 best_x = self.x_flat[min_idx]
                 best_y = self.y_flat[min_idx]
                 best_z = self.z_flat[min_idx]
                 
-                # Update visual red marker
                 self.cursor_marker.set_data([best_x], [best_y])
                 self.cursor_marker.set_3d_properties([best_z])
                 self.cursor_marker.set_visible(True)
                 
-                # Retrieve Real values for display
                 rx = self.real_axis_x[best_x]
                 ry = self.real_axis_y[best_y]
                 
@@ -306,7 +321,7 @@ class DensoViewerApp:
                 self.canvas.draw_idle()
         except: pass
 
-    # --- DATA READING (Your Perfect Code) ---
+    # --- DATA READING ---
     def read_axis(self, hex_addr, size, endian, axis_format):
         try:
             addr = int(str(hex_addr).strip(), 16)
@@ -357,7 +372,6 @@ class DensoViewerApp:
             clean_axis_x = [str(round(v, 2)).rstrip('0').rstrip('.') for v in axis_x]
             clean_axis_y = [str(round(v, 2)).rstrip('0').rstrip('.') for v in axis_y]
             
-            # Store real arrays for hover text
             self.real_axis_x = axis_x
             self.real_axis_y = axis_y
             
@@ -371,14 +385,12 @@ class DensoViewerApp:
                 y_grid = np.arange(size_y)
                 X, Y = np.meshgrid(x_grid, y_grid)
                 
-                # Store flattened arrays for mathematical hover projection
                 self.x_flat = X.flatten()
                 self.y_flat = Y.flatten()
                 self.z_flat = matrix_z.flatten()
                 
                 surf = self.ax3d.plot_surface(X, Y, matrix_z, cmap='jet', edgecolor='k', linewidth=0.3, alpha=0.9)
                 
-                # Create the Hover Tracking Ball
                 self.cursor_marker, = self.ax3d.plot([0], [0], [0], marker='o', color='red', markersize=8, zorder=10)
                 self.cursor_marker.set_visible(False)
                 
@@ -397,9 +409,14 @@ class DensoViewerApp:
                 except AttributeError:
                     pass
                 
-                # Reset camera but keep the custom distance zoom
                 self.ax3d.view_init(elev=self.start_elev, azim=self.start_azim)
-                self.ax3d.dist = self.cam_dist
+                
+                # Restaurar el nivel de zoom actual para que no dé un salto brusco
+                try:
+                    self.ax3d.set_zoom(self.ax3d.get_zoom())
+                except AttributeError:
+                    self.ax3d.dist = self.cam_dist
+
                 self.canvas.draw_idle()
                 
             elif self.view_mode == 'table':
