@@ -26,13 +26,14 @@ def extract_3d_maps():
         return
 
     f = open(filepath, "w")
-    f.write("Wrapper_Addr,Size_Y,Size_X,Axis_Y_Addr,Axis_X_Addr,Map_Z_Addr\n")
+    f.write("Wrapper_Addr,Size_X,Size_Y,Axis_X_Addr,Axis_Y_Addr,Map_Z_Addr\n")
     
     print("Starting Resilient Mass Extraction...")
     print("Saving to: " + filepath)
     print("----------------------------------------------------------------")
     
     map_count = 0
+    seen_maps = set() # Avoid duplicate maps
     
     for ref in refs:
         if ref.getReferenceType().isCall():
@@ -66,24 +67,29 @@ def extract_3d_maps():
                                 
                             real_config_addr = toAddr(real_config_offset)
                             
-                            # Read dimensions
-                            size_y = memory.getShort(real_config_addr) & 0xFFFF
-                            size_x = memory.getShort(real_config_addr.add(2)) & 0xFFFF
+                            # Duplicate filter
+                            if real_config_addr in seen_maps:
+                                valid_map_found = True
+                                break
                             
-                            # STRICT SANITY CHECK (This filters out the garbage/noise)
+                            # Read dimensions
+                            size_x = memory.getShort(real_config_addr) & 0xFFFF
+                            size_y = memory.getShort(real_config_addr.add(2)) & 0xFFFF
+                            
+                            # STRICT SANITY CHECK (This filters out garbage/noise)
                             if 0 < size_x <= 64 and 0 < size_y <= 64:
-                                ptr_y = memory.getInt(real_config_addr.add(4)) & 0xFFFFFFFF
-                                ptr_x = memory.getInt(real_config_addr.add(8)) & 0xFFFFFFFF
+                                ptr_x = memory.getInt(real_config_addr.add(4)) & 0xFFFFFFFF
+                                ptr_y = memory.getInt(real_config_addr.add(8)) & 0xFFFFFFFF
                                 ptr_z = memory.getInt(real_config_addr.add(12)) & 0xFFFFFFFF
                                 
                                 # BOOM! We got a valid map
-                                linea_csv = "{:08X},{},{},{:08X},{:08X},{:08X}\n".format(
-                                    call_addr.getOffset(), size_y, size_x, ptr_y, ptr_x, ptr_z
+                                csv_line = "{:08X},{},{},{:08X},{:08X},{:08X}\n".format(
+                                    call_addr.getOffset(), size_x, size_y, ptr_x, ptr_y, ptr_z
                                 )
-                                f.write(linea_csv)
+                                f.write(csv_line)
                                 print("Map Extracted OK -> Wrapper: {:08X} | Map_Addr: {:08X} | Size: {}x{}".format(
                                     call_addr.getOffset(), ptr_z, size_y, size_x))
-                                
+                                seen_maps.add(real_config_addr)
                                 map_count += 1
                                 valid_map_found = True
                                 break # Break the reference loop
