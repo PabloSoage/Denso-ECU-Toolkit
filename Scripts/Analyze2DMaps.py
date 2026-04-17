@@ -32,6 +32,7 @@ def extract_2d_maps():
     print("----------------------------------------------------------------")
     
     map_count = 0
+    seen_maps = set() # Avoid duplicate maps
     
     for ref in refs:
         if ref.getReferenceType().isCall():
@@ -63,6 +64,11 @@ def extract_2d_maps():
                                 
                             real_config_addr = toAddr(real_config_offset)
                             
+                            # Duplicate filter
+                            if real_config_addr in seen_maps:
+                                valid_map_found = True
+                                break
+                            
                             # Denso 2D Structure:
                             # 0x00: short Size X
                             # 0x04: int Pointer Axis X
@@ -81,6 +87,7 @@ def extract_2d_maps():
                                 print("2D Curve Extracted OK -> Wrapper: {:08X} | Data Addr: {:08X} | Points: {}".format(
                                     call_addr.getOffset(), ptr_data, size_x))
                                 
+                                seen_maps.add(real_config_addr)
                                 map_count += 1
                                 valid_map_found = True
                                 break
@@ -95,6 +102,6 @@ def extract_2d_maps():
 
     f.close()
     print("----------------------------------------------------------------")
-    print("SUCCESS! {} 2D curves were exported.".format(map_count))
+    print("SUCCESS! {} unique 2D curves were exported.".format(map_count))
 
 extract_2d_maps()
