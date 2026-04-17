@@ -98,6 +98,7 @@ class DensoViewerApp(QMainWindow):
         self.factor_z_2d = 1.0
         self.offset_z_2d = 0.0
         
+        # --- Independized Formats ---
         self.z_format_3d = '>H'
         self.z_format_2d = '>f'
         self.ax_format = 'f'
@@ -123,6 +124,85 @@ class DensoViewerApp(QMainWindow):
         
         self.init_ui()
         self.load_data()
+        
+        QApplication.instance().installEventFilter(self)
+
+    # ================ GLOBAL EVENT FILTER ================
+    def eventFilter(self, obj, event):
+        if event.type() == QEvent.Type.Wheel:
+            if hasattr(self, 'view_mode') and self.view_mode == 'plot':
+                if hasattr(self, 'canvas') and self.canvas.underMouse():
+                    delta = event.angleDelta().y()
+                    if delta != 0:
+                        zoom_in = delta > 0
+                        factor = 1.15 if zoom_in else 0.85
+                        old_zoom = self.cam_zoom
+                        
+                        if self.map_mode == '3d':
+                            # Limit minimum zoom to 1.0
+                            self.cam_zoom = max(1.0, min(self.cam_zoom * factor, 15.0))
+                            
+                            if self.cam_zoom == 1.0:
+                                self.center_x = self.abs_center_x
+                                self.center_y = self.abs_center_y
+                            elif old_zoom != self.cam_zoom:
+                                d_zoom = self.cam_zoom / old_zoom
+                                if zoom_in and self.is_hovering:
+                                    self.center_x = self.hover_x - (self.hover_x - self.center_x) / d_zoom
+                                    self.center_y = self.hover_y - (self.hover_y - self.center_y) / d_zoom
+                                else:
+                                    self.center_x = self.abs_center_x - (self.abs_center_x - self.center_x) / d_zoom
+                                    self.center_y = self.abs_center_y - (self.abs_center_y - self.center_y) / d_zoom
+                            
+                            self.apply_3d_zoom()
+                            self.status_lbl.setText(f"Zoom level: {self.cam_zoom:.2f}x")
+                        else:
+                            ax = self.ax
+                            x_min, x_max = ax.get_xlim()
+                            y_min, y_max = ax.get_ylim()
+                            inv = ax.transData.inverted()
+                            # Extract mouse position relative to the window
+                            win_pos = getattr(event, 'position', lambda: event.pos())()
+                            x_mouse, y_mouse = inv.transform((win_pos.x(), self.canvas.height() - win_pos.y()))
+                            
+                            factor_2d = 0.85 if zoom_in else 1.15
+                            ax.set_xlim([x_mouse - (x_mouse - x_min)*factor_2d, x_mouse + (x_max - x_mouse)*factor_2d])
+                            ax.set_ylim([y_mouse - (y_mouse - y_min)*factor_2d, y_mouse + (y_max - y_mouse)*factor_2d])
+                            self.canvas.draw_idle()
+                            
+                    return True 
+        return super().eventFilter(obj, event)
+    # =======================================================================
+
+    def load_data(self):
+        target_csv = self.csv_3d_path if self.map_mode == '3d' else self.csv_2d_path
+        if not os.path.exists(target_csv):
+            self.df = pd.DataFrame()
+            self.total_maps = 0
+            self.map_listbox.clear()
+            self.status_lbl.setText(f"File not found: {target_csv}")
+            return
+
+        try:
+            self.df = pd.read_csv(target_csv, dtype=str)
+            self.total_maps = len(self.df)
+            self.current_index = 0
+            self.current_map_addr = ""
+            self.update_list()
+            self.rebuild_plot_axes()
+            self.draw_map()
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Could not read CSV:\n{e}")
+
+    def rebuild_plot_axes(self):
+        """Recreates the matplotlib subplot depending on 2D or 3D mode"""
+        self.fig.clf()
+        if self.map_mode == '3d':
+            self.ax = self.fig.add_subplot(111, projection='3d')
+            self.ax.set_navigate(False)
+        else:
+            self.ax = self.fig.add_subplot(111)
+        self.canvas.draw_idle()
 
     def init_ui(self):
         central_widget = QWidget()
@@ -176,7 +256,6 @@ class DensoViewerApp(QMainWindow):
         self.fig = plt.figure(figsize=(8, 6))
         self.fig.subplots_adjust(left=0.05, right=0.95, bottom=0.08, top=0.92)
         
-        # Will be recreated dynamically depending on 2D/3D mode
         self.ax = self.fig.add_subplot(111, projection='3d')
         self.ax.set_navigate(False)
         
@@ -199,36 +278,6 @@ class DensoViewerApp(QMainWindow):
         
         main_layout.addLayout(right_panel, 4) 
 
-    def load_data(self):
-        target_csv = self.csv_3d_path if self.map_mode == '3d' else self.csv_2d_path
-        if not os.path.exists(target_csv):
-            self.df = pd.DataFrame()
-            self.total_maps = 0
-            self.map_listbox.clear()
-            self.status_lbl.setText(f"File not found: {target_csv}")
-            return
-
-        try:
-            self.df = pd.read_csv(target_csv, dtype=str)
-            self.total_maps = len(self.df)
-            self.current_index = 0
-            self.current_map_addr = ""
-            self.update_list()
-            self.rebuild_plot_axes()
-            self.draw_map()
-        except Exception as e:
-            QMessageBox.critical(self, "Error", f"Could not read CSV:\n{e}")
-
-    def rebuild_plot_axes(self):
-        """Recreates the matplotlib subplot depending on 2D or 3D mode"""
-        self.fig.clf()
-        if self.map_mode == '3d':
-            self.ax = self.fig.add_subplot(111, projection='3d')
-            self.ax.set_navigate(False)
-        else:
-            self.ax = self.fig.add_subplot(111)
-        self.canvas.draw_idle()
-
     # --- UI LOGIC ---
     def update_list(self):
         if self.df.empty: return
@@ -238,7 +287,7 @@ class DensoViewerApp(QMainWindow):
         
         addr_col = 'Map_Z_Addr' if self.map_mode == '3d' else 'Curve_Data_Addr'
         for idx, row in self.df.iterrows():
-            addr = str(row[addr_col]).strip()
+            addr = str(row.get(addr_col, '')).strip()
             if search_term in addr.lower():
                 self.map_listbox.addItem(f"Map {idx+1}: {addr}")
                 self.filtered_indices.append(idx)
@@ -282,7 +331,7 @@ class DensoViewerApp(QMainWindow):
     def open_settings(self):
         dialog = QDialog(self)
         dialog.setWindowTitle("Settings")
-        dialog.resize(450, 400)
+        dialog.resize(450, 480)
         layout = QVBoxLayout(dialog)
         
         tabs = QTabWidget()
@@ -328,27 +377,35 @@ class DensoViewerApp(QMainWindow):
         tab_fmt = QWidget()
         vbox_fmt = QVBoxLayout(tab_fmt)
         
-        gb_z = QGroupBox("Data Format (Z / Curve)")
-        ly_z = QVBoxLayout()
-        rb_z1 = QRadioButton("16-bit Big Endian (>H)")
-        rb_z2 = QRadioButton("16-bit Little Endian (<H)")
-        rb_z3 = QRadioButton("8-bit Unsigned (>B)")
-        rb_z4 = QRadioButton("32-bit Float (>f)") 
-        
-        def update_z_format_rbs():
-            fmt = self.z_format_3d if rb_m1.isChecked() else self.z_format_2d
-            if fmt == '>H': rb_z1.setChecked(True)
-            elif fmt == '<H': rb_z2.setChecked(True)
-            elif fmt == '>B': rb_z3.setChecked(True)
-            else: rb_z4.setChecked(True)
+        # 3D Format Group
+        gb_z3d = QGroupBox("3D Data Format (Z)")
+        ly_z3d = QVBoxLayout()
+        rb_3d_h = QRadioButton("16-bit Big Endian (>H)")
+        rb_3d_l = QRadioButton("16-bit Little Endian (<H)")
+        rb_3d_b = QRadioButton("8-bit Unsigned (>B)")
+        rb_3d_f = QRadioButton("32-bit Float (>f)")
+        if self.z_format_3d == '>H': rb_3d_h.setChecked(True)
+        elif self.z_format_3d == '<H': rb_3d_l.setChecked(True)
+        elif self.z_format_3d == '>B': rb_3d_b.setChecked(True)
+        else: rb_3d_f.setChecked(True)
+        ly_z3d.addWidget(rb_3d_h); ly_z3d.addWidget(rb_3d_l); ly_z3d.addWidget(rb_3d_b); ly_z3d.addWidget(rb_3d_f)
+        gb_z3d.setLayout(ly_z3d)
+        vbox_fmt.addWidget(gb_z3d)
 
-        rb_m1.toggled.connect(update_z_format_rbs)
-        rb_m2.toggled.connect(update_z_format_rbs)
-        update_z_format_rbs()
-        
-        ly_z.addWidget(rb_z1); ly_z.addWidget(rb_z2); ly_z.addWidget(rb_z3); ly_z.addWidget(rb_z4)
-        gb_z.setLayout(ly_z)
-        vbox_fmt.addWidget(gb_z)
+        # 2D Format Group
+        gb_z2d = QGroupBox("2D Data Format (Curve)")
+        ly_z2d = QVBoxLayout()
+        rb_2d_h = QRadioButton("16-bit Big Endian (>H)")
+        rb_2d_l = QRadioButton("16-bit Little Endian (<H)")
+        rb_2d_b = QRadioButton("8-bit Unsigned (>B)")
+        rb_2d_f = QRadioButton("32-bit Float (>f)")
+        if self.z_format_2d == '>H': rb_2d_h.setChecked(True)
+        elif self.z_format_2d == '<H': rb_2d_l.setChecked(True)
+        elif self.z_format_2d == '>B': rb_2d_b.setChecked(True)
+        else: rb_2d_f.setChecked(True)
+        ly_z2d.addWidget(rb_2d_h); ly_z2d.addWidget(rb_2d_l); ly_z2d.addWidget(rb_2d_b); ly_z2d.addWidget(rb_2d_f)
+        gb_z2d.setLayout(ly_z2d)
+        vbox_fmt.addWidget(gb_z2d)
         
         gb_a = QGroupBox("Axis Format")
         ly_a = QVBoxLayout()
@@ -428,16 +485,16 @@ class DensoViewerApp(QMainWindow):
                 self.map_mode = new_mode
                 self.load_data() 
             
-            # Apply Formats 
-            if rb_z1.isChecked(): new_z_format = '>H'
-            elif rb_z2.isChecked(): new_z_format = '<H'
-            elif rb_z3.isChecked(): new_z_format = '>B'
-            else: new_z_format = '>f'
-            
-            if new_mode == '3d':
-                self.z_format_3d = new_z_format
-            else:
-                self.z_format_2d = new_z_format
+            # Save independent format selection
+            if rb_3d_h.isChecked(): self.z_format_3d = '>H'
+            elif rb_3d_l.isChecked(): self.z_format_3d = '<H'
+            elif rb_3d_b.isChecked(): self.z_format_3d = '>B'
+            else: self.z_format_3d = '>f'
+
+            if rb_2d_h.isChecked(): self.z_format_2d = '>H'
+            elif rb_2d_l.isChecked(): self.z_format_2d = '<H'
+            elif rb_2d_b.isChecked(): self.z_format_2d = '>B'
+            else: self.z_format_2d = '>f'
             
             if rb_a1.isChecked(): self.ax_format = 'f'
             else: self.ax_format = 'H'
@@ -654,10 +711,12 @@ class DensoViewerApp(QMainWindow):
                 raw_matrix, axis_x, axis_y, size_y, size_x, map_addr = self.read_map_3d()
                 current_factor = self.factor_z_3d
                 current_offset = self.offset_z_3d
+                current_fmt = self.z_format_3d
             else:
                 raw_matrix, axis_x, _, size_y, size_x, map_addr = self.read_map_2d()
                 current_factor = self.factor_z_2d
                 current_offset = self.offset_z_2d
+                current_fmt = self.z_format_2d
                 
             matrix_z = (raw_matrix * current_factor) + current_offset
             
@@ -682,7 +741,7 @@ class DensoViewerApp(QMainWindow):
                 self.cam_zoom = 1.0 
                 self.current_map_addr = map_addr
             
-            title = f"Map {self.current_index + 1}/{self.total_maps} | Addr: {map_addr} | Factor: {current_factor}"
+            title = f"Map {self.current_index + 1}/{self.total_maps} | Addr: {map_addr} | Z: {current_fmt} | Factor: {current_factor}"
             self.lbl_title.setText(title)
 
             if self.view_mode == 'plot':
