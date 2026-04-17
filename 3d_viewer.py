@@ -10,7 +10,7 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QHBoxLayout, QV
                              QListWidget, QLineEdit, QPushButton, QLabel, QStackedWidget,
                              QTableWidget, QTableWidgetItem, QGroupBox, QRadioButton,
                              QFormLayout, QDialog, QDialogButtonBox, QDoubleSpinBox)
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QEvent
 
 # ================= CONFIGURATION =================
 CSV_FILE = "3d_maps_review.csv"
@@ -27,6 +27,7 @@ class DensoViewerApp(QMainWindow):
         self.df = pd.DataFrame()
         self.current_index = 0
         self.total_maps = 0
+        self.current_map_addr = ""
         
         self.factor_z = 0.0025
         self.offset_z = 0.0
@@ -35,14 +36,18 @@ class DensoViewerApp(QMainWindow):
         self.rot_mode = 'Z' 
         self.view_mode = '3d'
         
-        # Variables de Cámara y Zoom persistentes
+        # --- Variables de Cámara y Zoom ---
         self.dragging = False
         self.mouse_x = 0
         self.mouse_y = 0
         self.start_elev = 35
         self.start_azim = 135
-        self.cam_dist = 10.0  # Zoom para versiones antiguas de Matplotlib
-        self.cam_zoom = 1.0   # Zoom para versiones modernas de Matplotlib
+        self.cam_zoom = 1.0
+        
+        # Variables para Zoom hacia el ratón
+        self.is_hovering = False
+        self.hover_x = 0
+        self.hover_y = 0
         
         self.real_axis_x = []
         self.real_axis_y = []
@@ -53,6 +58,44 @@ class DensoViewerApp(QMainWindow):
         self.load_data()
         self.init_ui()
         self.draw_map()
+        
+        QApplication.instance().installEventFilter(self)
+
+    # ================== FILTRO GLOBAL DE EVENTOS (ZOOM CORREGIDO) ==================
+    def eventFilter(self, obj, event):
+        if event.type() == QEvent.Type.Wheel:
+            if hasattr(self, 'view_mode') and self.view_mode == '3d':
+                if hasattr(self, 'canvas') and self.canvas.underMouse():
+                    delta = event.angleDelta().y()
+                    if delta != 0:
+                        zoom_in = delta > 0
+                        factor = 1.15 if zoom_in else 0.85
+                        old_zoom = self.cam_zoom
+                        
+                        # Limitamos el zoom mínimo a 1.0 (tamaño original) para evitar bugs de recorte
+                        self.cam_zoom = max(1.0, min(self.cam_zoom * factor, 15.0))
+                        
+                        if self.cam_zoom == 1.0:
+                            # Reset absoluto al centro si alejamos al máximo
+                            self.center_x = self.abs_center_x
+                            self.center_y = self.abs_center_y
+                        elif old_zoom != self.cam_zoom:
+                            d_zoom = self.cam_zoom / old_zoom
+                            
+                            # Si acercamos y estamos sobre el gráfico, el centro va hacia el ratón
+                            if zoom_in and self.is_hovering:
+                                self.center_x = self.hover_x - (self.hover_x - self.center_x) / d_zoom
+                                self.center_y = self.hover_y - (self.hover_y - self.center_y) / d_zoom
+                            # Si alejamos, el centro se dirige magnéticamente al centro original
+                            else:
+                                self.center_x = self.abs_center_x - (self.abs_center_x - self.center_x) / d_zoom
+                                self.center_y = self.abs_center_y - (self.abs_center_y - self.center_y) / d_zoom
+                        
+                        self.apply_zoom()
+                        self.status_lbl.setText(f"Zoom level: {self.cam_zoom:.2f}x")
+                    return True 
+        return super().eventFilter(obj, event)
+    # ===============================================================================
 
     def load_data(self):
         try:
@@ -63,7 +106,6 @@ class DensoViewerApp(QMainWindow):
             sys.exit()
 
     def init_ui(self):
-        # Layout Principal
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
         main_layout = QHBoxLayout(central_widget)
@@ -84,8 +126,6 @@ class DensoViewerApp(QMainWindow):
         
         # --- PANEL DERECHO ---
         right_panel = QVBoxLayout()
-        
-        # Barra de Herramientas
         toolbar_layout = QHBoxLayout()
         
         self.lbl_title = QLabel("Map Info")
@@ -112,48 +152,38 @@ class DensoViewerApp(QMainWindow):
         
         right_panel.addLayout(toolbar_layout)
         
-        # Stacked Widget (Alternar entre Canvas 3D y Tabla)
         self.stacked_widget = QStackedWidget()
         
-        # 1. Matplotlib Canvas
+        # Matplotlib Canvas
         self.fig = plt.figure(figsize=(8, 6))
         self.fig.subplots_adjust(left=0.01, right=0.99, bottom=0.05, top=0.95)
         self.ax3d = self.fig.add_subplot(111, projection='3d')
         self.ax3d.set_navigate(False)
         
         self.canvas = FigureCanvas(self.fig)
-        self.canvas.setFocusPolicy(Qt.FocusPolicy.StrongFocus) # Asegura que capture eventos de rueda
         
-        # Eventos nativos de Matplotlib (funcionan en cualquier SO)
         self.canvas.mpl_connect('button_press_event', self.on_mouse_press)
         self.canvas.mpl_connect('button_release_event', self.on_mouse_release)
         self.canvas.mpl_connect('motion_notify_event', self.on_mouse_move)
-        self.canvas.mpl_connect('scroll_event', self.on_scroll)
         
         self.stacked_widget.addWidget(self.canvas)
         
-        # 2. Qt Table
         self.table = QTableWidget()
         self.stacked_widget.addWidget(self.table)
         
         right_panel.addWidget(self.stacked_widget, 1)
         
-        # Barra de estado
         self.status_lbl = QLabel("Hover over the graph to see values...")
         self.status_lbl.setStyleSheet("background-color: #222; color: #FFF; font-weight: bold; font-size: 14px; padding: 8px; border-radius: 4px;")
         right_panel.addWidget(self.status_lbl)
         
         main_layout.addLayout(right_panel, 4) 
-        
-        self.filtered_indices = []
         self.update_list()
 
-    # --- UI LOGIC ---
     def update_list(self):
         search_term = self.search_box.text().lower()
         self.map_listbox.clear()
         self.filtered_indices = []
-        
         for idx, row in self.df.iterrows():
             addr = str(row['Map_Z_Addr']).strip()
             if search_term in addr.lower():
@@ -199,7 +229,6 @@ class DensoViewerApp(QMainWindow):
         dialog.resize(350, 400)
         layout = QVBoxLayout(dialog)
         
-        # Z Format
         gb_z = QGroupBox("Z Data Format")
         vbox_z = QVBoxLayout()
         rb_z1 = QRadioButton("16-bit Big Endian (>H)")
@@ -212,7 +241,6 @@ class DensoViewerApp(QMainWindow):
         gb_z.setLayout(vbox_z)
         layout.addWidget(gb_z)
         
-        # Axis Format
         gb_a = QGroupBox("Axis X/Y Format")
         vbox_a = QVBoxLayout()
         rb_a1 = QRadioButton("32-bit Float (f)")
@@ -223,7 +251,6 @@ class DensoViewerApp(QMainWindow):
         gb_a.setLayout(vbox_a)
         layout.addWidget(gb_a)
         
-        # Rotation
         gb_r = QGroupBox("Mouse Rotation Mode")
         vbox_r = QVBoxLayout()
         rb_r1 = QRadioButton("Z-Axis Only (WinOLS Azimuth)")
@@ -236,7 +263,6 @@ class DensoViewerApp(QMainWindow):
         gb_r.setLayout(vbox_r)
         layout.addWidget(gb_r)
         
-        # Math
         gb_m = QGroupBox("Math")
         form_m = QFormLayout()
         spin_f = QDoubleSpinBox()
@@ -254,7 +280,6 @@ class DensoViewerApp(QMainWindow):
         gb_m.setLayout(form_m)
         layout.addWidget(gb_m)
         
-        # Botones
         btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         btns.accepted.connect(dialog.accept)
         btns.rejected.connect(dialog.reject)
@@ -264,77 +289,81 @@ class DensoViewerApp(QMainWindow):
             if rb_z1.isChecked(): self.z_format = '>H'
             elif rb_z2.isChecked(): self.z_format = '<H'
             else: self.z_format = '>B'
-            
             if rb_a1.isChecked(): self.ax_format = 'f'
             else: self.ax_format = 'H'
-            
             if rb_r1.isChecked(): self.rot_mode = 'Z'
             elif rb_r2.isChecked(): self.rot_mode = 'WinOLS'
             else: self.rot_mode = 'Tilt'
-            
             self.factor_z = spin_f.value()
             self.offset_z = spin_o.value()
-            
             self.draw_map()
 
-    # --- MATPLOTLIB EVENTS (ZOOM & HOVER) ---
-    def on_scroll(self, event):
-        """Zoom robusto sin bloqueos de ejes."""
-        if self.view_mode != '3d': return
+    # --- LÓGICA MATEMÁTICA DE ZOOM INFALIBLE ---
+    def apply_zoom(self):
+        if not hasattr(self, 'map_size_x'): return
         
-        zoom_in = event.step > 0
+        x_range = max(1, self.map_size_x - 1) / self.cam_zoom
+        y_range = max(1, self.map_size_y - 1) / self.cam_zoom
         
-        # Ajustamos la distancia física
-        factor = 0.85 if zoom_in else 1.15
-        self.cam_dist = max(1.0, min(self.cam_dist * factor, 50.0))
-        self.ax3d.dist = self.cam_dist
+        # Bloqueador (Clamp) para que el mapa NUNCA se salga de los límites al hacer zoom
+        min_c_x = x_range / 2
+        max_c_x = (self.map_size_x - 1) - x_range / 2
+        self.center_x = max(min_c_x, min(self.center_x, max_c_x))
         
-        # Ajustamos el nivel de zoom matemático
-        z_factor = 1.15 if zoom_in else 0.85
-        self.cam_zoom = max(0.1, min(self.cam_zoom * z_factor, 10.0))
+        min_c_y = y_range / 2
+        max_c_y = (self.map_size_y - 1) - y_range / 2
+        self.center_y = max(min_c_y, min(self.center_y, max_c_y))
         
-        try:
-            self.ax3d.set_zoom(self.cam_zoom)
-        except AttributeError:
-            pass
-            
+        self.ax3d.set_xlim(self.center_x - x_range/2, self.center_x + x_range/2)
+        self.ax3d.set_ylim(self.center_y + y_range/2, self.center_y - y_range/2)
+        
+        # EL Z-AXIS SE QUEDA BLOQUEADO PARA QUE LOS NÚMEROS NO CAMBIEN NI SE DEFORMEN
+        if self.z_min == self.z_max:
+            self.ax3d.set_zlim(self.z_min - 1, self.z_max + 1)
+        else:
+            self.ax3d.set_zlim(self.z_min, self.z_max)
+        
         self.canvas.draw_idle()
 
+    # --- MATPLOTLIB EVENTS (HOVER & ROTATION) ---
     def on_mouse_press(self, event):
-        if event.button != 1: return
-        self.dragging = True
-        self.mouse_x = event.x
-        self.mouse_y = event.y
-        self.start_elev = self.ax3d.elev
-        self.start_azim = self.ax3d.azim
+        if event.button == 1: 
+            self.dragging = True
+            self.mouse_x = event.x
+            self.mouse_y = event.y
+            self.start_elev = self.ax3d.elev
+            self.start_azim = self.ax3d.azim
 
     def on_mouse_release(self, event):
         self.dragging = False
+        self.start_elev = self.ax3d.elev
+        self.start_azim = self.ax3d.azim
 
     def on_mouse_move(self, event):
         if self.dragging:
             if event.x is None or event.y is None: return
-            
             dx = event.x - self.mouse_x
             dy = event.y - self.mouse_y
             sens = 0.4
             
+            new_elev = self.start_elev
+            new_azim = self.start_azim
+            
             if self.rot_mode == 'WinOLS':
                 new_elev = max(-90, min(90, self.start_elev - (dy * sens)))
                 new_azim = self.start_azim - (dx * sens)
-                self.ax3d.view_init(elev=new_elev, azim=new_azim)
             elif self.rot_mode == 'Z':
                 new_azim = self.start_azim - (dx * sens)
-                self.ax3d.view_init(elev=self.start_elev, azim=new_azim)
             elif self.rot_mode == 'Tilt':
                 new_elev = max(-90, min(90, self.start_elev - (dy * sens)))
-                self.ax3d.view_init(elev=new_elev, azim=self.start_azim)
                 
+            self.ax3d.view_init(elev=new_elev, azim=new_azim)
             self.canvas.draw_idle()
             return
             
         # Hover Tracking
         if getattr(event, 'inaxes', None) != self.ax3d or self.dragging or len(self.z_flat) == 0:
+            self.is_hovering = False
             if hasattr(self, 'cursor_marker') and self.cursor_marker.get_visible():
                 self.cursor_marker.set_visible(False)
                 self.status_lbl.setText("Hover over the graph to see values...")
@@ -344,43 +373,42 @@ class DensoViewerApp(QMainWindow):
         try:
             xs, ys, _ = proj3d.proj_transform(self.x_flat, self.y_flat, self.z_flat, self.ax3d.get_proj())
             points2d = self.ax3d.transData.transform(np.column_stack([xs, ys]))
-            
             dists = (points2d[:, 0] - event.x)**2 + (points2d[:, 1] - event.y)**2
             min_idx = np.argmin(dists)
             
             if dists[min_idx] < 600: 
-                best_x = self.x_flat[min_idx]
-                best_y = self.y_flat[min_idx]
+                self.is_hovering = True
+                self.hover_x = self.x_flat[min_idx]
+                self.hover_y = self.y_flat[min_idx]
+                
                 best_z = self.z_flat[min_idx]
                 
-                self.cursor_marker.set_data([best_x], [best_y])
+                self.cursor_marker.set_data([self.hover_x], [self.hover_y])
                 self.cursor_marker.set_3d_properties([best_z])
                 self.cursor_marker.set_visible(True)
                 
-                rx = self.real_axis_x[best_x]
-                ry = self.real_axis_y[best_y]
+                rx = self.real_axis_x[self.hover_x]
+                ry = self.real_axis_y[self.hover_y]
                 
                 lbl = f"Target Point: X = {rx:g}   |   Y = {ry:g}   |   Z = {best_z:.2f}"
                 self.status_lbl.setText(lbl)
                 self.canvas.draw_idle()
             else:
+                self.is_hovering = False
                 self.cursor_marker.set_visible(False)
                 self.status_lbl.setText("Hover over the graph to see values...")
                 self.canvas.draw_idle()
         except: pass
 
-    # --- DATA READING ---
     def read_axis(self, hex_addr, size, endian, axis_format):
         try:
             addr = int(str(hex_addr).strip(), 16)
             if addr == 0 or addr >= 0xFFFF0000:
                 return np.arange(size)
-                
             bytes_per_value = 4 if axis_format == 'f' else 2
             with open(ORI_FILE, "rb") as f:
                 f.seek(addr)
                 raw = f.read(size * bytes_per_value)
-                
             return np.array(struct.unpack(f"{endian}{size}{axis_format}", raw))
         except:
             return np.arange(size)
@@ -402,13 +430,10 @@ class DensoViewerApp(QMainWindow):
             
         z_values = struct.unpack(f"{endian}{size_y * size_x}{self.z_format[-1]}", raw_z_data)
         matrix_z = np.array(z_values).reshape((size_y, size_x))
-        
         axis_x = self.read_axis(axis_x_hex, size_x, endian, self.ax_format)
         axis_y = self.read_axis(axis_y_hex, size_y, endian, self.ax_format)
-        
         return matrix_z, axis_x, axis_y, size_y, size_x, map_z_hex
 
-    # --- RENDERING ---
     def draw_map(self):
         try:
             raw_matrix, axis_x, axis_y, size_y, size_x, map_z_hex = self.read_map()
@@ -419,6 +444,20 @@ class DensoViewerApp(QMainWindow):
             
             self.real_axis_x = axis_x
             self.real_axis_y = axis_y
+            
+            # Recalculamos los centros de zoom solo si cambiamos de mapa
+            self.map_size_x = size_x
+            self.map_size_y = size_y
+            self.z_min = matrix_z.min()
+            self.z_max = matrix_z.max()
+            
+            if self.current_map_addr != map_z_hex:
+                self.abs_center_x = (size_x - 1) / 2.0
+                self.abs_center_y = (size_y - 1) / 2.0
+                self.center_x = self.abs_center_x
+                self.center_y = self.abs_center_y
+                self.cam_zoom = 1.0 # Resetea el zoom al cambiar de mapa
+                self.current_map_addr = map_z_hex
             
             title = f"Map {self.current_index + 1}/{self.total_maps} | Addr: {map_z_hex} | Factor: {self.factor_z}"
             self.lbl_title.setText(title)
@@ -444,32 +483,23 @@ class DensoViewerApp(QMainWindow):
                 self.ax3d.set_yticks(y_grid)
                 self.ax3d.set_yticklabels(clean_axis_y, fontsize=8)
                 
-                self.ax3d.set_xlabel('\nX Axis')
-                self.ax3d.set_ylabel('\nY Axis')
-                self.ax3d.set_zlabel('Z Data')
+                # Ajuste de labelpad para separar el nombre del eje de los números
+                self.ax3d.set_xlabel('\nX Axis', labelpad=12)
+                self.ax3d.set_ylabel('\nY Axis', labelpad=12)
+                self.ax3d.set_zlabel('Z Data', labelpad=12)
                 
-                self.ax3d.invert_yaxis() 
                 try:
                     self.ax3d.set_box_aspect((2.5, 2.0, 0.6))
                 except AttributeError:
                     pass
                 
                 self.ax3d.view_init(elev=self.start_elev, azim=self.start_azim)
-                
-                # Aplicamos el Zoom almacenado
-                self.ax3d.dist = self.cam_dist
-                try:
-                    self.ax3d.set_zoom(self.cam_zoom)
-                except AttributeError:
-                    pass
-
-                self.canvas.draw_idle()
+                self.apply_zoom()
                 
             elif self.view_mode == 'table':
                 self.table.clear()
                 self.table.setRowCount(size_y)
                 self.table.setColumnCount(size_x)
-                
                 self.table.setHorizontalHeaderLabels(clean_axis_x)
                 self.table.setVerticalHeaderLabels(clean_axis_y)
                 
@@ -479,7 +509,6 @@ class DensoViewerApp(QMainWindow):
                         item = QTableWidgetItem(str(val))
                         item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                         self.table.setItem(i, j, item)
-                        
                 self.table.resizeColumnsToContents()
                 
         except Exception as e:
