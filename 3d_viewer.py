@@ -11,8 +11,8 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QHBoxLayout, QV
                              QListWidget, QLineEdit, QPushButton, QLabel, QStackedWidget,
                              QTableWidget, QTableWidgetItem, QGroupBox, QRadioButton,
                              QFormLayout, QDialog, QDialogButtonBox, QDoubleSpinBox,
-                             QTabWidget, QFileDialog, QMessageBox)
-from PyQt6.QtCore import Qt, QEvent, QPointF
+                             QTabWidget, QFileDialog, QMessageBox, QCheckBox)
+from PyQt6.QtCore import Qt, QEvent, QPointF, QRectF
 from PyQt6.QtGui import QPainter, QColor, QPolygonF, QBrush
 
 # ================= DEFAULT CONFIGURATION =================
@@ -22,49 +22,61 @@ DEFAULT_BIN = "115_e3a4d17c28.bin"
 # =========================================================
 
 class SparklineWidget(QWidget):
-    """Mini-gráfico (Montañita) para emular la vista de filas de WinOLS"""
-    def __init__(self, data_row, min_val, max_val):
+    """Subclass that draws the sparklines at the end of each row"""
+    def __init__(self, data_row, min_val, max_val, style='Bars'):
         super().__init__()
         self.data = data_row
         self.min_val = min_val
         self.max_val = max_val
-        self.setMinimumWidth(100)
+        self.style = style
+        self.setMinimumWidth(120)
 
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         
-        # Fondo negro estilo WinOLS
         painter.fillRect(self.rect(), QColor(0, 0, 0))
         
         w = self.width()
         h = self.height()
         
+        painter.setBrush(QBrush(QColor(0, 255, 0)))
+        painter.setPen(Qt.PenStyle.NoPen)
+        
         if self.max_val == self.min_val:
-            pts = [QPointF(0, h), QPointF(w, h)]
-        else:
-            pts = [QPointF(0, h)] # Empezar desde abajo a la izquierda
+            if self.style == 'Line':
+                poly = QPolygonF([QPointF(0, h), QPointF(w, h)])
+                painter.drawPolygon(poly)
+            return
+
+        if self.style == 'Line':
+            pts = [QPointF(0, h)]
             for i, val in enumerate(self.data):
                 x = i * (w / max(1, len(self.data) - 1))
-                # Normalizar altura: restamos a 'h' porque en píxeles Y crece hacia abajo
                 y = h - ((val - self.min_val) / (self.max_val - self.min_val)) * h
                 pts.append(QPointF(x, y))
-            pts.append(QPointF(w, h)) # Terminar abajo a la derecha
-            
-        poly = QPolygonF(pts)
-        painter.setBrush(QBrush(QColor(0, 255, 0))) # Relleno Verde WinOLS
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.drawPolygon(poly)
+            pts.append(QPointF(w, h))
+            painter.drawPolygon(QPolygonF(pts))
+        else:
+            # Bars mode (Individual rectangles like WinOLS)
+            num_bars = len(self.data)
+            bar_w = w / num_bars
+            for i, val in enumerate(self.data):
+                x = i * bar_w
+                y_norm = (val - self.min_val) / (self.max_val - self.min_val)
+                bar_h = y_norm * (h - 2)
+                y = h - 1 - bar_h
+                # Float rect instead of int to avoid rounding issues in separation and width. 
+                # Slightly wider width by reducing the subtraction from 1 to 0.5.
+                painter.drawRect(QRectF(x, y, max(1.0, bar_w - 0.5), bar_h))
 
 
 class CustomCanvas(FigureCanvas):
-    """Subclass to capture native PyQt6 mouse events for robust zooming"""
     def __init__(self, fig, parent):
         super().__init__(fig)
         self.parent_app = parent
 
     def wheelEvent(self, event):
-        # Native PyQt6 scroll event
         if self.parent_app.view_mode != 'plot': return
         if not self.underMouse(): return
         
@@ -72,7 +84,6 @@ class CustomCanvas(FigureCanvas):
         if delta == 0: return
         zoom_in = delta > 0
 
-        # --- 3D Zoom Logic ---
         if self.parent_app.map_mode == '3d':
             factor = 1.15 if zoom_in else 0.85
             old_zoom = self.parent_app.cam_zoom
@@ -91,15 +102,12 @@ class CustomCanvas(FigureCanvas):
                     self.parent_app.center_y = self.parent_app.abs_center_y - (self.parent_app.abs_center_y - self.parent_app.center_y) / d_zoom
             
             self.parent_app.apply_3d_zoom()
-            self.parent_app.status_lbl.setText(f"3D Zoom: {self.parent_app.cam_zoom:.2f}x")
             
-        # --- 2D Zoom Logic ---
         else:
             factor = 1.15 if zoom_in else 0.85
             old_zoom = self.parent_app.cam_zoom_2d
             self.parent_app.cam_zoom_2d = max(1.0, min(self.parent_app.cam_zoom_2d * factor, 50.0))
             
-            # Reset magnético al centro
             if self.parent_app.cam_zoom_2d == 1.0:
                 self.parent_app.center_x_2d = (self.parent_app.abs_xlim[0] + self.parent_app.abs_xlim[1]) / 2.0
                 self.parent_app.center_y_2d = (self.parent_app.abs_ylim[0] + self.parent_app.abs_ylim[1]) / 2.0
@@ -110,12 +118,10 @@ class CustomCanvas(FigureCanvas):
                 pos = getattr(event, 'position', lambda: event.pos())()
                 x_mouse, y_mouse = inv.transform((pos.x(), self.height() - pos.y()))
                 
-                # Zoom enfocado hacia el cursor
                 self.parent_app.center_x_2d = x_mouse - (x_mouse - self.parent_app.center_x_2d) / d_zoom
                 self.parent_app.center_y_2d = y_mouse - (y_mouse - self.parent_app.center_y_2d) / d_zoom
             
             self.parent_app.apply_2d_zoom()
-            self.parent_app.status_lbl.setText(f"2D Zoom: {self.parent_app.cam_zoom_2d:.2f}x")
 
 
 class DensoViewerApp(QMainWindow):
@@ -135,9 +141,11 @@ class DensoViewerApp(QMainWindow):
         self.total_maps = 0
         self.current_map_addr = ""
         
-        self.map_mode = '3d' # '3d' or '2d'
-        self.view_mode = 'plot' # 'plot' or 'table'
-        self.display_hex = False # Estado para la visualización Hexadecimal
+        self.map_mode = '3d'
+        self.view_mode = 'plot' 
+        self.display_hex = False 
+        self.apply_factor_to_hex = False 
+        self.sparkline_style = 'Bars'    
         
         # --- Independized Factors ---
         self.factor_z_3d = 0.0025
@@ -145,7 +153,6 @@ class DensoViewerApp(QMainWindow):
         self.factor_z_2d = 1.0
         self.offset_z_2d = 0.0
         
-        # --- Independized Formats ---
         self.z_format_3d = '>H'
         self.z_format_2d = '>f'
         self.ax_format = 'f'
@@ -158,14 +165,12 @@ class DensoViewerApp(QMainWindow):
         self.start_elev = 35
         self.start_azim = 135
         
-        # 3D Variables
         self.cam_zoom = 1.0
         self.abs_center_x = 0
         self.abs_center_y = 0
         self.center_x = 0
         self.center_y = 0
         
-        # 2D Variables
         self.cam_zoom_2d = 1.0
         self.abs_xlim = (0, 1)
         self.abs_ylim = (0, 1)
@@ -181,9 +186,20 @@ class DensoViewerApp(QMainWindow):
         self.x_flat = []
         self.y_flat = []
         self.z_flat = []
+        self.raw_flat = []
         
         self.init_ui()
         self.load_data()
+        
+        QApplication.instance().installEventFilter(self)
+
+    def eventFilter(self, obj, event):
+        if event.type() == QEvent.Type.Wheel:
+            if hasattr(self, 'view_mode') and self.view_mode == 'plot':
+                if hasattr(self, 'canvas') and self.canvas.underMouse():
+                    self.canvas.wheelEvent(event)
+                    return True 
+        return super().eventFilter(obj, event)
 
     def load_data(self):
         target_csv = self.csv_3d_path if self.map_mode == '3d' else self.csv_2d_path
@@ -206,12 +222,10 @@ class DensoViewerApp(QMainWindow):
             QMessageBox.critical(self, "Error", f"Could not read CSV:\n{e}")
 
     def rebuild_plot_axes(self):
-        """Recreates the matplotlib subplot depending on 2D or 3D mode"""
         self.fig.clf()
         if self.map_mode == '3d':
             self.ax = self.fig.add_subplot(111, projection='3d')
             self.ax.set_navigate(False)
-            # Desactivar interacción predeterminada de Matplotlib
             try: self.ax.disable_mouse_rotation() 
             except AttributeError: pass
         else:
@@ -256,6 +270,7 @@ class DensoViewerApp(QMainWindow):
         
         self.btn_hex = QPushButton("Dec / Hex")
         self.btn_hex.clicked.connect(self.toggle_hex)
+        self.btn_hex.setVisible(False)
         toolbar_layout.addWidget(self.btn_hex)
         
         btn_toggle = QPushButton("Toggle Plot / Table")
@@ -276,8 +291,6 @@ class DensoViewerApp(QMainWindow):
         
         self.ax = self.fig.add_subplot(111, projection='3d')
         self.ax.set_navigate(False)
-        try: self.ax.disable_mouse_rotation() 
-        except: pass
         
         self.canvas = CustomCanvas(self.fig, self)
         self.canvas.mpl_connect('button_press_event', self.on_mouse_press)
@@ -343,13 +356,14 @@ class DensoViewerApp(QMainWindow):
         if self.view_mode == 'plot':
             self.view_mode = 'table'
             self.stacked_widget.setCurrentIndex(1)
+            self.btn_hex.setVisible(True) 
         else:
             self.view_mode = 'plot'
             self.stacked_widget.setCurrentIndex(0)
+            self.btn_hex.setVisible(False)
         self.draw_map()
         
     def toggle_hex(self):
-        """Alterna entre vista Decimal y Hexadecimal crudo"""
         self.display_hex = not self.display_hex
         self.btn_hex.setStyleSheet("background-color: #ffcccc;" if self.display_hex else "")
         self.draw_map()
@@ -403,7 +417,6 @@ class DensoViewerApp(QMainWindow):
         tab_fmt = QWidget()
         vbox_fmt = QVBoxLayout(tab_fmt)
         
-        # 3D Format Group
         gb_z3d = QGroupBox("3D Data Format (Z)")
         ly_z3d = QVBoxLayout()
         rb_3d_h = QRadioButton("16-bit Big Endian (>H)")
@@ -418,7 +431,6 @@ class DensoViewerApp(QMainWindow):
         gb_z3d.setLayout(ly_z3d)
         vbox_fmt.addWidget(gb_z3d)
 
-        # 2D Format Group
         gb_z2d = QGroupBox("2D Data Format (Curve)")
         ly_z2d = QVBoxLayout()
         rb_2d_h = QRadioButton("16-bit Big Endian (>H)")
@@ -445,11 +457,11 @@ class DensoViewerApp(QMainWindow):
         vbox_fmt.addStretch()
         tabs.addTab(tab_fmt, "Format")
         
-        # TAB 3: MATH & CONTROLS
+        # TAB 3: MATH, VIEW & CONTROLS
         tab_math = QWidget()
         vbox_m = QVBoxLayout(tab_math)
         
-        gb_math = QGroupBox("Math (Applied to Decimal View)")
+        gb_math = QGroupBox("Math (Applied to Z/Curve)")
         form_m = QFormLayout()
         
         spin_f_3d = QDoubleSpinBox()
@@ -479,6 +491,24 @@ class DensoViewerApp(QMainWindow):
         gb_math.setLayout(form_m)
         vbox_m.addWidget(gb_math)
         
+        # Table and Hex Settings
+        gb_tbl = QGroupBox("Table Settings")
+        ly_tbl = QVBoxLayout()
+        self.cb_hex_f = QCheckBox("Apply Factor/Offset to Hex View")
+        self.cb_hex_f.setChecked(self.apply_factor_to_hex)
+        ly_tbl.addWidget(self.cb_hex_f)
+        
+        ly_spark = QHBoxLayout()
+        ly_spark.addWidget(QLabel("Sparkline Style:"))
+        rb_sp1 = QRadioButton("Bars (WinOLS)")
+        rb_sp2 = QRadioButton("Continuous Line")
+        if self.sparkline_style == 'Bars': rb_sp1.setChecked(True)
+        else: rb_sp2.setChecked(True)
+        ly_spark.addWidget(rb_sp1); ly_spark.addWidget(rb_sp2)
+        ly_tbl.addLayout(ly_spark)
+        gb_tbl.setLayout(ly_tbl)
+        vbox_m.addWidget(gb_tbl)
+        
         gb_r = QGroupBox("3D Mouse Rotation Mode")
         ly_r = QVBoxLayout()
         rb_r1 = QRadioButton("Z-Axis Only (WinOLS Azimuth)")
@@ -490,8 +520,9 @@ class DensoViewerApp(QMainWindow):
         ly_r.addWidget(rb_r1); ly_r.addWidget(rb_r2); ly_r.addWidget(rb_r3)
         gb_r.setLayout(ly_r)
         vbox_m.addWidget(gb_r)
+        
         vbox_m.addStretch()
-        tabs.addTab(tab_math, "Math & 3D")
+        tabs.addTab(tab_math, "Math & View")
         
         btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         btns.accepted.connect(dialog.accept)
@@ -499,10 +530,7 @@ class DensoViewerApp(QMainWindow):
         layout.addWidget(btns)
         
         if dialog.exec():
-            self.bin_path = le_bin.text()
-            self.csv_3d_path = le_3d.text()
-            self.csv_2d_path = le_2d.text()
-            
+            self.bin_path = le_bin.text(); self.csv_3d_path = le_3d.text(); self.csv_2d_path = le_2d.text()
             new_mode = '3d' if rb_m1.isChecked() else '2d'
             if new_mode != self.map_mode:
                 self.map_mode = new_mode
@@ -530,6 +558,9 @@ class DensoViewerApp(QMainWindow):
             self.factor_z_2d = spin_f_2d.value()
             self.offset_z_2d = spin_o_2d.value()
             
+            self.apply_factor_to_hex = self.cb_hex_f.isChecked()
+            self.sparkline_style = 'Bars' if rb_sp1.isChecked() else 'Line'
+            
             self.draw_map()
 
     # --- 3D & 2D ZOOM LOGIC ---
@@ -544,26 +575,17 @@ class DensoViewerApp(QMainWindow):
         
         min_c_x = x_range / 2
         max_c_x = (self.map_size_x - 1) - x_range / 2
-        
-        if min_c_x > max_c_x:
-            self.center_x = (self.map_size_x - 1) / 2.0
-        else:
-            self.center_x = max(min_c_x, min(self.center_x, max_c_x))
+        self.center_x = (self.map_size_x - 1) / 2.0 if min_c_x > max_c_x else max(min_c_x, min(self.center_x, max_c_x))
             
         min_c_y = y_range / 2
         max_c_y = (self.map_size_y - 1) - y_range / 2
-        if min_c_y > max_c_y:
-            self.center_y = (self.map_size_y - 1) / 2.0
-        else:
-            self.center_y = max(min_c_y, min(self.center_y, max_c_y))
+        self.center_y = (self.map_size_y - 1) / 2.0 if min_c_y > max_c_y else max(min_c_y, min(self.center_y, max_c_y))
             
         self.ax.set_xlim(self.center_x - x_range/2, self.center_x + x_range/2)
         self.ax.set_ylim(self.center_y + y_range/2, self.center_y - y_range/2)
         
-        if self.z_min == self.z_max:
-            self.ax.set_zlim(self.z_min - 1, self.z_max + 1)
-        else:
-            self.ax.set_zlim(self.z_min, self.z_max)
+        if self.z_min == self.z_max: self.ax.set_zlim(self.z_min - 1, self.z_max + 1)
+        else: self.ax.set_zlim(self.z_min, self.z_max)
             
         self.ax.set_autoscale_on(False)
         self.canvas.draw_idle()
@@ -608,11 +630,9 @@ class DensoViewerApp(QMainWindow):
     def on_mouse_move(self, event):
         if self.df.empty: return
         
-        # 1. Handling Drag (Rotation/Pan)
         if self.dragging:
             if event.x is None or event.y is None: return
             
-            # --- 3D Rotation ---
             if self.map_mode == '3d':
                 dx = event.x - self.mouse_x
                 dy = event.y - self.mouse_y
@@ -631,7 +651,6 @@ class DensoViewerApp(QMainWindow):
                 self.ax.view_init(elev=new_elev, azim=new_azim)
                 self.canvas.draw_idle()
             
-            # --- 2D Pan ---
             else:
                 dx_pixels = event.x - self.mouse_x
                 dy_pixels = event.y - self.mouse_y
@@ -653,7 +672,6 @@ class DensoViewerApp(QMainWindow):
             self.mouse_x_data = event.xdata
             self.mouse_y_data = event.ydata
             
-        # 2. Handling Hover
         if getattr(event, 'inaxes', None) != self.ax or len(self.z_flat) == 0:
             self.is_hovering = False
             if hasattr(self, 'cursor_marker') and self.cursor_marker.get_visible():
@@ -685,7 +703,8 @@ class DensoViewerApp(QMainWindow):
                     ry = self.real_axis_y[self.hover_y]
                     
                     if self.display_hex:
-                        lbl = f"Target: X = {rx:g}   |   Y = {ry:g}   |   Z (RAW HEX) = {self.val_to_hex(self.raw_flat[min_idx])}"
+                        v_hex = best_z if self.apply_factor_to_hex else self.raw_flat[min_idx]
+                        lbl = f"Target: X = {rx:g}   |   Y = {ry:g}   |   Z (HEX) = {self.val_to_hex(v_hex)}"
                     else:
                         lbl = f"Target: X = {rx:g}   |   Y = {ry:g}   |   Z = {best_z:.2f}"
                 else:
@@ -693,9 +712,10 @@ class DensoViewerApp(QMainWindow):
                     best_z = self.z_flat[min_idx]
                     self.cursor_marker.set_data([best_x], [best_z])
                     if self.display_hex:
-                        lbl = f"Target: X = {best_x:g}   |   Z (RAW HEX) = {self.val_to_hex(self.raw_flat[min_idx])}"
+                        v_hex = best_z if self.apply_factor_to_hex else self.raw_flat[min_idx]
+                        lbl = f"Target: X = {best_x:g}   |   Z (HEX) = {self.val_to_hex(v_hex)}"
                     else:
-                        lbl = f"Target: X = {best_x:g}   |   Z = {best_z:.2f}"
+                        lbl = f"Target: X = {best_x:g}   |   Z (Curve) = {best_z:.2f}"
 
                 self.cursor_marker.set_visible(True)
                 self.status_lbl.setText(lbl)
@@ -769,7 +789,7 @@ class DensoViewerApp(QMainWindow):
         return curve_z, axis_x, axis_y_dummy, size_y_dummy, size_x, curve_data_hex
 
     def val_to_hex(self, val):
-        """Convierte valor bruto (sin factor) a representación Hexadecimal."""
+        """Convert a value to its Hexadecimal representation"""
         fmt_char = self.z_format_3d[-1] if self.map_mode == '3d' else self.z_format_2d[-1]
         try:
             if fmt_char == 'f':
@@ -777,9 +797,9 @@ class DensoViewerApp(QMainWindow):
                 i = struct.unpack('>I', packed)[0]
                 return f"{i:08X}"
             elif fmt_char.lower() == 'h':
-                return f"{int(val) & 0xFFFF:04X}"
+                return f"{int(round(float(val))) & 0xFFFF:04X}"
             else:
-                return f"{int(val) & 0xFF:02X}"
+                return f"{int(round(float(val))) & 0xFF:02X}"
         except: return "ERR"
 
     # --- RENDERING ---
@@ -806,7 +826,6 @@ class DensoViewerApp(QMainWindow):
             
             self.real_axis_x = axis_x
             
-            # Setup Zoom constraints
             self.map_size_x = size_x
             self.map_size_y = size_y
             self.z_min = matrix_z.min()
@@ -815,14 +834,12 @@ class DensoViewerApp(QMainWindow):
             if self.current_map_addr != map_addr:
                 self.current_map_addr = map_addr
                 
-                # Reseteos de 3D
                 self.abs_center_x = (size_x - 1) / 2.0
                 self.abs_center_y = (size_y - 1) / 2.0
                 self.center_x = self.abs_center_x
                 self.center_y = self.abs_center_y
                 self.cam_zoom = 1.0 
                 
-                # Reseteos de 2D y limites absolutos
                 x_margin = (axis_x.max() - axis_x.min()) * 0.05
                 if x_margin == 0: x_margin = 1.0
                 y_margin = (matrix_z.max() - matrix_z.min()) * 0.05
@@ -848,7 +865,7 @@ class DensoViewerApp(QMainWindow):
                     self.x_flat = X.flatten()
                     self.y_flat = Y.flatten()
                     self.z_flat = matrix_z.flatten()
-                    self.raw_flat = raw_matrix.flatten() # Para tracking Hexadecimal
+                    self.raw_flat = raw_matrix.flatten()
                     
                     self.ax.plot_surface(X, Y, matrix_z, cmap='jet', edgecolor='k', linewidth=0.3, alpha=0.9)
                     self.cursor_marker, = self.ax.plot([0], [0], [0], marker='o', color='red', markersize=8, zorder=10)
@@ -890,12 +907,13 @@ class DensoViewerApp(QMainWindow):
                 self.table.clear()
                 self.table.setRowCount(size_y)
                 
-                # +1 column for Sparklines
+                # Sum +1 for the Sparkline column
                 self.table.setColumnCount(size_x + 1)
                 
                 headers = clean_axis_x + ["Profile"]
                 self.table.setHorizontalHeaderLabels(headers)
                 
+                # Calculate the global min and max for proper scaling of green bars
                 raw_min = raw_matrix.min()
                 raw_max = raw_matrix.max()
                 
@@ -904,7 +922,8 @@ class DensoViewerApp(QMainWindow):
                     for i in range(size_y):
                         for j in range(size_x):
                             if self.display_hex:
-                                val_str = self.val_to_hex(raw_matrix[i, j])
+                                v = matrix_z[i, j] if self.apply_factor_to_hex else raw_matrix[i, j]
+                                val_str = self.val_to_hex(v)
                             else:
                                 val_str = f"{matrix_z[i, j]:.2f}"
                                 
@@ -912,14 +931,15 @@ class DensoViewerApp(QMainWindow):
                             item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                             self.table.setItem(i, j, item)
                             
-                        # Insertar Sparkline en la última columna
-                        spark = SparklineWidget(raw_matrix[i, :], raw_min, raw_max)
+                        # Insert Sparkline in the last column
+                        spark = SparklineWidget(raw_matrix[i, :], raw_min, raw_max, self.sparkline_style)
                         self.table.setCellWidget(i, size_x, spark)
                 else:
                     self.table.setVerticalHeaderLabels(["Curve Data"])
                     for j in range(size_x):
                         if self.display_hex:
-                            val_str = self.val_to_hex(raw_matrix[j])
+                            v = matrix_z[j] if self.apply_factor_to_hex else raw_matrix[j]
+                            val_str = self.val_to_hex(v)
                         else:
                             val_str = f"{matrix_z[j]:.2f}"
                             
@@ -927,12 +947,12 @@ class DensoViewerApp(QMainWindow):
                         item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                         self.table.setItem(0, j, item)
                         
-                    # Insertar Sparkline en la última columna
-                    spark = SparklineWidget(raw_matrix, raw_min, raw_max)
+                    # Insert Sparkline 2D
+                    spark = SparklineWidget(raw_matrix, raw_min, raw_max, self.sparkline_style)
                     self.table.setCellWidget(0, size_x, spark)
                         
                 self.table.resizeColumnsToContents()
-                self.table.setColumnWidth(size_x, 150) # Dar ancho fijo al minigráfico
+                self.table.setColumnWidth(size_x, 150)
                 
         except Exception as e:
             if self.view_mode == 'plot':
