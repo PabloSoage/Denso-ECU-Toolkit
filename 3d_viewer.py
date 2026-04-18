@@ -12,7 +12,7 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QHBoxLayout, QV
                              QTableWidget, QTableWidgetItem, QGroupBox, QRadioButton,
                              QFormLayout, QDialog, QDialogButtonBox, QDoubleSpinBox,
                              QTabWidget, QFileDialog, QMessageBox, QCheckBox, QTableView,
-                             QStyledItemDelegate, QInputDialog)
+                             QStyledItemDelegate, QInputDialog, QSplitter)
 from PyQt6.QtCore import Qt, QEvent, QPointF, QRectF, QAbstractTableModel, QModelIndex, QVariant
 from PyQt6.QtGui import QPainter, QColor, QPolygonF, QBrush, QFont, QKeySequence, QShortcut
 
@@ -293,7 +293,11 @@ class CustomCanvas(FigureCanvas):
         if delta == 0: return
         zoom_in = delta > 0
 
-        if self.parent_app.map_mode == '3d':
+        is_3d = self.parent_app.map_mode == '3d'
+        if self.parent_app.btn_main_mode.text() == "Mode: Hex Dump":
+            is_3d = self.parent_app.hex_plot_mode == '3d'
+
+        if is_3d:
             factor = 1.15 if zoom_in else 0.85
             old_zoom = self.parent_app.cam_zoom
             self.parent_app.cam_zoom = max(1.0, min(self.parent_app.cam_zoom * factor, 15.0))
@@ -357,6 +361,9 @@ class DensoViewerApp(QMainWindow):
         self.sparkline_style = 'Bars'    
         self.highlight_3d = True
         self.highlight_2d = True
+        self.hex_plot_visible = True
+        self.hex_plot_mode = '3d'
+        self.hex_plot_position = 'top'
         self.bin_data = b""
         self.color_map = None
         
@@ -436,13 +443,20 @@ class DensoViewerApp(QMainWindow):
 
     def rebuild_plot_axes(self):
         self.fig.clf()
-        if self.map_mode == '3d':
+        is_3d = False
+        if hasattr(self, 'btn_main_mode') and self.btn_main_mode.text() == "Mode: Hex Dump":
+            is_3d = self.hex_plot_mode == '3d'
+        else:
+            is_3d = self.map_mode == '3d'
+            
+        if is_3d:
             self.ax = self.fig.add_subplot(111, projection='3d')
             self.ax.set_navigate(False)
             try: self.ax.disable_mouse_rotation() 
             except AttributeError: pass
         else:
             self.ax = self.fig.add_subplot(111)
+            self.ax.set_navigate(False)
         self.canvas.draw_idle()
 
     def init_ui(self):
@@ -486,6 +500,16 @@ class DensoViewerApp(QMainWindow):
         self.btn_hex.setVisible(False)
         toolbar_layout.addWidget(self.btn_hex)
         
+        self.btn_hex_plot_toggle = QPushButton("Hex Plot: ON")
+        self.btn_hex_plot_toggle.clicked.connect(self.toggle_hex_plot)
+        self.btn_hex_plot_toggle.setVisible(False)
+        toolbar_layout.addWidget(self.btn_hex_plot_toggle)
+        
+        self.btn_hex_plot_mode = QPushButton("Plot Mode: 3D")
+        self.btn_hex_plot_mode.clicked.connect(self.toggle_hex_plot_mode)
+        self.btn_hex_plot_mode.setVisible(False)
+        toolbar_layout.addWidget(self.btn_hex_plot_mode)
+        
         self.btn_main_mode = QPushButton("Mode: Map Viewer")
         self.btn_main_mode.clicked.connect(self.toggle_main_mode)
         toolbar_layout.addWidget(self.btn_main_mode)
@@ -500,7 +524,7 @@ class DensoViewerApp(QMainWindow):
         
         right_panel.addLayout(toolbar_layout)
         
-        self.stacked_widget = QStackedWidget()
+        self.stacked_widget = QSplitter(Qt.Orientation.Vertical)
         
         # Matplotlib Canvas
         self.fig = plt.figure(figsize=(8, 6))
@@ -516,15 +540,31 @@ class DensoViewerApp(QMainWindow):
         
         self.stacked_widget.addWidget(self.canvas)
         
+        self.bottom_stack = QStackedWidget()
+        
         # Qt Table
         self.table = QTableWidget()
-        self.stacked_widget.addWidget(self.table)
+        self.bottom_stack.addWidget(self.table)
         
         # Hex Table
         self.hex_table = QTableView()
         self.hex_table.setItemDelegate(HexMapDelegate())
-        self.hex_table.selectionModel() # Will assign in update_hex_view
-        self.stacked_widget.addWidget(self.hex_table)
+        # The selectionModel is created when setModel is called later
+        self.bottom_stack.addWidget(self.hex_table)
+        
+        self.stacked_widget.addWidget(self.bottom_stack)
+        
+        # Adjust Splitter Sizes (Plot gets roughly 60%, Table 40%)
+        self.stacked_widget.setSizes([600, 400])
+        
+        if self.view_mode == 'plot':
+            self.canvas.setVisible(True)
+            self.bottom_stack.setVisible(False)
+        else:
+            self.canvas.setVisible(False)
+            self.bottom_stack.setVisible(True)
+            self.bottom_stack.setCurrentIndex(0)
+            self.btn_hex.setVisible(True)
         
         right_panel.addWidget(self.stacked_widget, 1)
         
@@ -586,28 +626,93 @@ class DensoViewerApp(QMainWindow):
         new_mode = modes[(idx + 1) % len(modes)]
         self.btn_main_mode.setText(f"Mode: {new_mode}")
         
+        self.rebuild_plot_axes()
+        
         if new_mode == 'Map Viewer':
             self.btn_toggle.setVisible(True)
-            self.stacked_widget.setCurrentIndex(0 if self.view_mode == 'plot' else 1)
-            self.btn_hex.setVisible(self.view_mode == 'table')
+            self.btn_hex_plot_toggle.setVisible(False)
+            self.btn_hex_plot_mode.setVisible(False)
+            
+            # Reset splitter order for map viewer
+            self.stacked_widget.setOrientation(Qt.Orientation.Vertical)
+            self.stacked_widget.insertWidget(0, self.canvas)
+            self.stacked_widget.insertWidget(1, self.bottom_stack)
+            self.stacked_widget.setSizes([600, 400])
+            
+            if self.view_mode == 'plot':
+                self.canvas.setVisible(True)
+                self.bottom_stack.setVisible(False)
+                self.btn_hex.setVisible(False)
+            else:
+                self.canvas.setVisible(False)
+                self.bottom_stack.setVisible(True)
+                self.bottom_stack.setCurrentIndex(0) # Table
+                self.btn_hex.setVisible(True)
         else:
             self.btn_toggle.setVisible(False)
             self.btn_hex.setVisible(False)
-            self.stacked_widget.setCurrentIndex(2) # Hex Table
+            self.btn_hex_plot_toggle.setVisible(True)
+            self.btn_hex_plot_mode.setVisible(self.hex_plot_visible)
+            
+            # Hex Dump mode
+            self.canvas.setVisible(self.hex_plot_visible)
+            self.bottom_stack.setVisible(True)
+            self.bottom_stack.setCurrentIndex(1) # Hex Table
+            self.apply_splitter_position()
+            
         self.draw_map()
+
+    def toggle_hex_plot(self):
+        self.hex_plot_visible = not self.hex_plot_visible
+        self.btn_hex_plot_toggle.setText("Hex Plot: ON" if self.hex_plot_visible else "Hex Plot: OFF")
+        self.btn_hex_plot_mode.setVisible(self.hex_plot_visible)
+        
+        if self.btn_main_mode.text() == "Mode: Hex Dump":
+            self.canvas.setVisible(self.hex_plot_visible)
+            if self.hex_plot_visible:
+                self.apply_splitter_position()
+                self.update_hex_plot()
+
+    def toggle_hex_plot_mode(self):
+        if self.hex_plot_mode == '3d':
+            self.hex_plot_mode = '2d'
+            self.btn_hex_plot_mode.setText("Plot Mode: 2D")
+        else:
+            self.hex_plot_mode = '3d'
+            self.btn_hex_plot_mode.setText("Plot Mode: 3D")
+            
+        self.rebuild_plot_axes()
+        if self.btn_main_mode.text() == "Mode: Hex Dump" and self.hex_plot_visible:
+            self.update_hex_plot()
+
+    def apply_splitter_position(self):
+        if self.btn_main_mode.text() == "Mode: Hex Dump":
+            if self.hex_plot_position == 'top':
+                self.stacked_widget.setOrientation(Qt.Orientation.Vertical)
+                self.stacked_widget.insertWidget(0, self.canvas)
+                self.stacked_widget.insertWidget(1, self.bottom_stack)
+                self.stacked_widget.setSizes([600, 400])
+            else:
+                self.stacked_widget.setOrientation(Qt.Orientation.Horizontal)
+                self.stacked_widget.insertWidget(0, self.bottom_stack)
+                self.stacked_widget.insertWidget(1, self.canvas)
+                self.stacked_widget.setSizes([400, 600])
 
     def toggle_view(self):
         if self.view_mode == 'plot':
             self.view_mode = 'table'
             self.btn_toggle.setText("View: Table")
             if self.btn_main_mode.text() == "Mode: Map Viewer":
-                self.stacked_widget.setCurrentIndex(1)
+                self.canvas.setVisible(False)
+                self.bottom_stack.setVisible(True)
+                self.bottom_stack.setCurrentIndex(0)
                 self.btn_hex.setVisible(True)
         else:
             self.view_mode = 'plot'
             self.btn_toggle.setText("View: Plot")
             if self.btn_main_mode.text() == "Mode: Map Viewer":
-                self.stacked_widget.setCurrentIndex(0)
+                self.canvas.setVisible(True)
+                self.bottom_stack.setVisible(False)
                 self.btn_hex.setVisible(False)
         self.draw_map()
 
@@ -762,6 +867,17 @@ class DensoViewerApp(QMainWindow):
         else: rb_sp2.setChecked(True)
         ly_spark.addWidget(rb_sp1); ly_spark.addWidget(rb_sp2)
         ly_tbl.addLayout(ly_spark)
+        
+        gb_hex_pos = QGroupBox("Hex Dump Plot Position")
+        ly_hex_pos = QHBoxLayout()
+        rb_pos_top = QRadioButton("Top")
+        rb_pos_right = QRadioButton("Right")
+        if self.hex_plot_position == 'top': rb_pos_top.setChecked(True)
+        else: rb_pos_right.setChecked(True)
+        ly_hex_pos.addWidget(rb_pos_top); ly_hex_pos.addWidget(rb_pos_right)
+        gb_hex_pos.setLayout(ly_hex_pos)
+        ly_tbl.addWidget(gb_hex_pos)
+        
         gb_tbl.setLayout(ly_tbl)
         vbox_m.addWidget(gb_tbl)
         
@@ -819,6 +935,12 @@ class DensoViewerApp(QMainWindow):
             self.highlight_2d = self.cb_hl_2d.isChecked()
             self.sparkline_style = 'Bars' if rb_sp1.isChecked() else 'Line'
             
+            new_pos = 'top' if rb_pos_top.isChecked() else 'right'
+            if new_pos != self.hex_plot_position:
+                self.hex_plot_position = new_pos
+                if self.btn_main_mode.text() == "Mode: Hex Dump":
+                    self.apply_splitter_position()
+            
             self.draw_map()
 
     # --- 3D & 2D ZOOM LOGIC ---
@@ -872,7 +994,7 @@ class DensoViewerApp(QMainWindow):
             self.mouse_x = event.x
             self.mouse_y = event.y
             
-            if self.map_mode == '3d':
+            if self.map_mode == '3d' or (self.btn_main_mode.text() == "Mode: Hex Dump" and self.hex_plot_mode == '3d'):
                 self.start_elev = self.ax.elev
                 self.start_azim = self.ax.azim
             else:
@@ -881,17 +1003,17 @@ class DensoViewerApp(QMainWindow):
 
     def on_mouse_release(self, event):
         self.dragging = False
-        if self.map_mode == '3d':
+        if self.map_mode == '3d' or (self.btn_main_mode.text() == "Mode: Hex Dump" and self.hex_plot_mode == '3d'):
             self.start_elev = self.ax.elev
             self.start_azim = self.ax.azim
 
     def on_mouse_move(self, event):
-        if self.df.empty: return
+        if self.df.empty and self.btn_main_mode.text() != "Mode: Hex Dump": return
         
         if self.dragging:
             if event.x is None or event.y is None: return
             
-            if self.map_mode == '3d':
+            if self.map_mode == '3d' or (self.btn_main_mode.text() == "Mode: Hex Dump" and self.hex_plot_mode == '3d'):
                 dx = event.x - self.mouse_x
                 dy = event.y - self.mouse_y
                 sens = 0.4
@@ -939,7 +1061,7 @@ class DensoViewerApp(QMainWindow):
             return
 
         try:
-            if self.map_mode == '3d':
+            if self.map_mode == '3d' or (self.btn_main_mode.text() == "Mode: Hex Dump" and self.hex_plot_mode == '3d'):
                 xs, ys, _ = proj3d.proj_transform(self.x_flat, self.y_flat, self.z_flat, self.ax.get_proj())
                 points2d = self.ax.transData.transform(np.column_stack([xs, ys]))
             else:
@@ -951,7 +1073,7 @@ class DensoViewerApp(QMainWindow):
             if dists[min_idx] < 600: 
                 self.is_hovering = True
                 
-                if self.map_mode == '3d':
+                if self.map_mode == '3d' or (self.btn_main_mode.text() == "Mode: Hex Dump" and self.hex_plot_mode == '3d'):
                     self.hover_x = self.x_flat[min_idx]
                     self.hover_y = self.y_flat[min_idx]
                     best_z = self.z_flat[min_idx]
@@ -1132,7 +1254,7 @@ class DensoViewerApp(QMainWindow):
         self.status_lbl.setText(f"Hex Cursor: {addr:08X}  ({addr})")
 
     def goto_hex_address(self):
-        if self.stacked_widget.currentIndex() != 2: return
+        if self.btn_main_mode.text() != "Mode: Hex Dump": return
         addr_str, ok = QInputDialog.getText(self, "Goto Address", "Enter Hex Address:")
         if ok and addr_str:
             try:
@@ -1146,6 +1268,128 @@ class DensoViewerApp(QMainWindow):
                 self.hex_table.setCurrentIndex(idx)
             except: pass
 
+    def update_hex_plot(self, selected=None, deselected=None):
+        if self.btn_main_mode.text() != "Mode: Hex Dump":
+            return
+            
+        if not self.hex_plot_visible:
+            return
+            
+        model = self.hex_table_model
+        sel_model = self.hex_table.selectionModel()
+        indexes = sel_model.selectedIndexes()
+        
+        # Exclude sparkline column
+        indexes = [idx for idx in indexes if idx.column() < model.data_cols]
+        
+        if not indexes:
+            # Try to grab the current index
+            curr = sel_model.currentIndex()
+            start_row = curr.row() if curr.isValid() else 0
+            end_row = start_row + 15
+            start_col = 0
+            end_col = model.data_cols - 1
+            if start_row == 0 and not curr.isValid():
+                # Avoid plotting if no valid data
+                pass
+        elif len(indexes) == 1:
+            start_row = indexes[0].row()
+            end_row = start_row + 15
+            start_col = 0
+            end_col = model.data_cols - 1
+        else:
+            start_row = min(idx.row() for idx in indexes)
+            end_row = max(idx.row() for idx in indexes)
+            start_col = min(idx.column() for idx in indexes)
+            end_col = max(idx.column() for idx in indexes)
+            
+        size_y = end_row - start_row + 1
+        size_x = end_col - start_col + 1
+        
+        if size_y <= 0 or size_x <= 0:
+            return
+            
+        matrix_z = np.zeros((size_y, size_x))
+        raw_matrix = np.zeros((size_y, size_x))
+        
+        bpc = model.bytes_per_col
+        fmt_char = model.fmt_char
+        endian = model.endian
+        
+        plot_mode = self.hex_plot_mode
+        factor = self.factor_z_3d if plot_mode == '3d' else self.factor_z_2d
+        offset = self.offset_z_3d if plot_mode == '3d' else self.offset_z_2d
+        
+        for r in range(size_y):
+            for c in range(size_x):
+                addr = (start_row + r) * 16 + (start_col + c) * bpc
+                if addr + bpc <= len(self.bin_data):
+                    val_bytes = self.bin_data[addr:addr+bpc]
+                    try:
+                        v = struct.unpack(f"{endian}{fmt_char}", val_bytes)[0]
+                        raw_matrix[r, c] = v
+                        matrix_z[r, c] = v * factor + offset
+                    except: pass
+        
+        self.ax.clear()
+        
+        main_addr = start_row*16 + start_col*bpc
+        self.lbl_title.setText(f"Hex Plot ({plot_mode.upper()}) | Cursor: {main_addr:08X} | Area: {size_x} col x {size_y} row")
+        
+        if plot_mode == '3d':
+            if size_x > 1 and size_y > 1:
+                x_grid = np.arange(size_x)
+                y_grid = np.arange(size_y)
+                X, Y = np.meshgrid(x_grid, y_grid)
+                self.x_flat = X.flatten()
+                self.y_flat = Y.flatten()
+                self.z_flat = matrix_z.flatten()
+                self.raw_flat = raw_matrix.flatten()
+                
+                self.real_axis_x = np.arange(size_x)
+                self.real_axis_y = np.arange(size_y)
+                
+                self.ax.plot_surface(X, Y, matrix_z, cmap='jet', edgecolor='k', linewidth=0.3, alpha=0.9)
+                self.ax.invert_yaxis()
+                try: self.ax.set_box_aspect((2.5, 2.0, 0.6))
+                except: pass
+                self.ax.view_init(elev=self.start_elev, azim=self.start_azim)
+                
+                self.map_size_x = size_x
+                self.map_size_y = size_y
+                self.z_min = matrix_z.min()
+                self.z_max = matrix_z.max()
+                self.cam_zoom = 1.0
+                self.center_x = (size_x - 1) / 2.0
+                self.center_y = (size_y - 1) / 2.0
+                
+            else:
+                self.ax.text2D(0.5, 0.5, "Select a larger area in the hex table\n(At least 2x2 cells) for 3D", transform=self.ax.transAxes, ha='center', color='red')
+                self.x_flat = []
+        else:
+            flat_z = matrix_z.flatten()
+            flat_raw = raw_matrix.flatten()
+            self.x_flat = np.arange(len(flat_z))
+            self.z_flat = flat_z
+            self.raw_flat = flat_raw
+            self.ax.plot(self.x_flat, flat_z, marker='o', color='b', linewidth=2, markersize=5)
+            self.ax.grid(True, linestyle='--', alpha=0.7)
+            
+            x_margin = max(1, len(flat_z) * 0.05)
+            y_margin = max(1, (matrix_z.max() - matrix_z.min()) * 0.05)
+            self.abs_xlim = (-x_margin, len(flat_z) - 1 + x_margin)
+            self.abs_ylim = (matrix_z.min() - y_margin, matrix_z.max() + y_margin)
+            self.cam_zoom_2d = 1.0
+            self.center_x_2d = (self.abs_xlim[0] + self.abs_xlim[1]) / 2.0
+            self.center_y_2d = (self.abs_ylim[0] + self.abs_ylim[1]) / 2.0
+            
+        if plot_mode == '3d':
+            self.cursor_marker, = self.ax.plot([0], [0], [0], marker='o', color='red', markersize=8, zorder=10)
+        else:
+            self.cursor_marker, = self.ax.plot([0], [0], marker='o', color='red', markersize=8, zorder=10)
+        self.cursor_marker.set_visible(False)
+        self.canvas.draw_idle()
+
     def update_hex_view(self):
         self.build_color_map()
         
@@ -1156,6 +1400,7 @@ class DensoViewerApp(QMainWindow):
             self.hex_table.setModel(self.hex_table_model)
             self.hex_table.setFont(QFont("Courier New", 10))
             self.hex_table.selectionModel().currentChanged.connect(self.on_hex_selection_changed)
+            self.hex_table.selectionModel().selectionChanged.connect(self.update_hex_plot)
         else:
             self.hex_table_model.update_settings(self.bin_data, self.map_array, self.map_dicts, fmt, self.sparkline_style)
             
@@ -1227,6 +1472,7 @@ class DensoViewerApp(QMainWindow):
 
             if self.btn_main_mode.text() == "Mode: Hex Dump":
                 self.update_hex_view()
+                self.update_hex_plot()
             elif self.view_mode == 'plot':
                 self.ax.clear()
                 
