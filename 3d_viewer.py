@@ -12,7 +12,7 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QHBoxLayout, QV
                              QTableWidget, QTableWidgetItem, QGroupBox, QRadioButton,
                              QFormLayout, QDialog, QDialogButtonBox, QDoubleSpinBox,
                              QTabWidget, QFileDialog, QMessageBox)
-from PyQt6.QtCore import Qt, QEvent
+from PyQt6.QtCore import Qt
 
 # ================= DEFAULT CONFIGURATION =================
 DEFAULT_CSV_3D = "3d_maps_review.csv"
@@ -58,18 +58,27 @@ class CustomCanvas(FigureCanvas):
             
         # --- 2D Zoom Logic ---
         else:
-            ax = self.parent_app.ax
-            x_min, x_max = ax.get_xlim()
-            y_min, y_max = ax.get_ylim()
+            factor = 1.15 if zoom_in else 0.85
+            old_zoom = self.parent_app.cam_zoom_2d
+            self.parent_app.cam_zoom_2d = max(1.0, min(self.parent_app.cam_zoom_2d * factor, 50.0))
             
-            # Simple zoom towards mouse cursor for 2D
-            inv = ax.transData.inverted()
-            x_mouse, y_mouse = inv.transform((event.position().x(), self.height() - event.position().y()))
+            # Reset magnético al centro
+            if self.parent_app.cam_zoom_2d == 1.0:
+                self.parent_app.center_x_2d = (self.parent_app.abs_xlim[0] + self.parent_app.abs_xlim[1]) / 2.0
+                self.parent_app.center_y_2d = (self.parent_app.abs_ylim[0] + self.parent_app.abs_ylim[1]) / 2.0
+            elif old_zoom != self.parent_app.cam_zoom_2d:
+                d_zoom = self.parent_app.cam_zoom_2d / old_zoom
+                ax = self.parent_app.ax
+                inv = ax.transData.inverted()
+                pos = getattr(event, 'position', lambda: event.pos())()
+                x_mouse, y_mouse = inv.transform((pos.x(), self.height() - pos.y()))
+                
+                # Zoom enfocado hacia el cursor
+                self.parent_app.center_x_2d = x_mouse - (x_mouse - self.parent_app.center_x_2d) / d_zoom
+                self.parent_app.center_y_2d = y_mouse - (y_mouse - self.parent_app.center_y_2d) / d_zoom
             
-            factor = 0.85 if zoom_in else 1.15
-            ax.set_xlim([x_mouse - (x_mouse - x_min)*factor, x_mouse + (x_max - x_mouse)*factor])
-            ax.set_ylim([y_mouse - (y_mouse - y_min)*factor, y_mouse + (y_max - y_mouse)*factor])
-            self.draw_idle()
+            self.parent_app.apply_2d_zoom()
+            self.parent_app.status_lbl.setText(f"2D Zoom: {self.parent_app.cam_zoom_2d:.2f}x")
 
 
 class DensoViewerApp(QMainWindow):
@@ -110,7 +119,20 @@ class DensoViewerApp(QMainWindow):
         self.mouse_y = 0
         self.start_elev = 35
         self.start_azim = 135
+        
+        # 3D Variables
         self.cam_zoom = 1.0
+        self.abs_center_x = 0
+        self.abs_center_y = 0
+        self.center_x = 0
+        self.center_y = 0
+        
+        # 2D Variables
+        self.cam_zoom_2d = 1.0
+        self.abs_xlim = (0, 1)
+        self.abs_ylim = (0, 1)
+        self.center_x_2d = 0
+        self.center_y_2d = 0
         
         self.is_hovering = False
         self.hover_x = 0
@@ -124,55 +146,6 @@ class DensoViewerApp(QMainWindow):
         
         self.init_ui()
         self.load_data()
-        
-        QApplication.instance().installEventFilter(self)
-
-    # ================ GLOBAL EVENT FILTER ================
-    def eventFilter(self, obj, event):
-        if event.type() == QEvent.Type.Wheel:
-            if hasattr(self, 'view_mode') and self.view_mode == 'plot':
-                if hasattr(self, 'canvas') and self.canvas.underMouse():
-                    delta = event.angleDelta().y()
-                    if delta != 0:
-                        zoom_in = delta > 0
-                        factor = 1.15 if zoom_in else 0.85
-                        old_zoom = self.cam_zoom
-                        
-                        if self.map_mode == '3d':
-                            # Limit minimum zoom to 1.0
-                            self.cam_zoom = max(1.0, min(self.cam_zoom * factor, 15.0))
-                            
-                            if self.cam_zoom == 1.0:
-                                self.center_x = self.abs_center_x
-                                self.center_y = self.abs_center_y
-                            elif old_zoom != self.cam_zoom:
-                                d_zoom = self.cam_zoom / old_zoom
-                                if zoom_in and self.is_hovering:
-                                    self.center_x = self.hover_x - (self.hover_x - self.center_x) / d_zoom
-                                    self.center_y = self.hover_y - (self.hover_y - self.center_y) / d_zoom
-                                else:
-                                    self.center_x = self.abs_center_x - (self.abs_center_x - self.center_x) / d_zoom
-                                    self.center_y = self.abs_center_y - (self.abs_center_y - self.center_y) / d_zoom
-                            
-                            self.apply_3d_zoom()
-                            self.status_lbl.setText(f"Zoom level: {self.cam_zoom:.2f}x")
-                        else:
-                            ax = self.ax
-                            x_min, x_max = ax.get_xlim()
-                            y_min, y_max = ax.get_ylim()
-                            inv = ax.transData.inverted()
-                            # Extract mouse position relative to the window
-                            win_pos = getattr(event, 'position', lambda: event.pos())()
-                            x_mouse, y_mouse = inv.transform((win_pos.x(), self.canvas.height() - win_pos.y()))
-                            
-                            factor_2d = 0.85 if zoom_in else 1.15
-                            ax.set_xlim([x_mouse - (x_mouse - x_min)*factor_2d, x_mouse + (x_max - x_mouse)*factor_2d])
-                            ax.set_ylim([y_mouse - (y_mouse - y_min)*factor_2d, y_mouse + (y_max - y_mouse)*factor_2d])
-                            self.canvas.draw_idle()
-                            
-                    return True 
-        return super().eventFilter(obj, event)
-    # =======================================================================
 
     def load_data(self):
         target_csv = self.csv_3d_path if self.map_mode == '3d' else self.csv_2d_path
@@ -200,6 +173,9 @@ class DensoViewerApp(QMainWindow):
         if self.map_mode == '3d':
             self.ax = self.fig.add_subplot(111, projection='3d')
             self.ax.set_navigate(False)
+            # Desactivar interacción predeterminada de Matplotlib para no interferir con el nuestro
+            try: self.ax.disable_mouse_rotation() 
+            except AttributeError: pass
         else:
             self.ax = self.fig.add_subplot(111)
         self.canvas.draw_idle()
@@ -258,6 +234,8 @@ class DensoViewerApp(QMainWindow):
         
         self.ax = self.fig.add_subplot(111, projection='3d')
         self.ax.set_navigate(False)
+        try: self.ax.disable_mouse_rotation() 
+        except: pass
         
         self.canvas = CustomCanvas(self.fig, self)
         self.canvas.mpl_connect('button_press_event', self.on_mouse_press)
@@ -511,21 +489,32 @@ class DensoViewerApp(QMainWindow):
             
             self.draw_map()
 
-    # --- 3D ZOOM LOGIC ---
+    # --- 3D & 2D ZOOM LOGIC ---
     def apply_3d_zoom(self):
         if not hasattr(self, 'map_size_x'): return
         
-        x_range = max(1, self.map_size_x - 1) / self.cam_zoom
-        y_range = max(1, self.map_size_y - 1) / self.cam_zoom
+        # Margen del 15% para que no se corte inicialmente
+        base_x = max(1, self.map_size_x - 1) * 1.15
+        base_y = max(1, self.map_size_y - 1) * 1.15
+        
+        x_range = base_x / self.cam_zoom
+        y_range = base_y / self.cam_zoom
         
         min_c_x = x_range / 2
         max_c_x = (self.map_size_x - 1) - x_range / 2
-        self.center_x = max(min_c_x, min(self.center_x, max_c_x))
         
+        if min_c_x > max_c_x:
+            self.center_x = (self.map_size_x - 1) / 2.0
+        else:
+            self.center_x = max(min_c_x, min(self.center_x, max_c_x))
+            
         min_c_y = y_range / 2
         max_c_y = (self.map_size_y - 1) - y_range / 2
-        self.center_y = max(min_c_y, min(self.center_y, max_c_y))
-        
+        if min_c_y > max_c_y:
+            self.center_y = (self.map_size_y - 1) / 2.0
+        else:
+            self.center_y = max(min_c_y, min(self.center_y, max_c_y))
+            
         self.ax.set_xlim(self.center_x - x_range/2, self.center_x + x_range/2)
         self.ax.set_ylim(self.center_y + y_range/2, self.center_y - y_range/2)
         
@@ -534,6 +523,24 @@ class DensoViewerApp(QMainWindow):
         else:
             self.ax.set_zlim(self.z_min, self.z_max)
             
+        self.ax.set_autoscale_on(False)
+        self.canvas.draw_idle()
+
+    def apply_2d_zoom(self):
+        x_range = (self.abs_xlim[1] - self.abs_xlim[0]) / self.cam_zoom_2d
+        y_range = (self.abs_ylim[1] - self.abs_ylim[0]) / self.cam_zoom_2d
+        
+        min_cx = self.abs_xlim[0] + x_range/2
+        max_cx = self.abs_xlim[1] - x_range/2
+        self.center_x_2d = max(min_cx, min(self.center_x_2d, max_cx))
+        
+        min_cy = self.abs_ylim[0] + y_range/2
+        max_cy = self.abs_ylim[1] - y_range/2
+        self.center_y_2d = max(min_cy, min(self.center_y_2d, max_cy))
+        
+        self.ax.set_xlim(self.center_x_2d - x_range/2, self.center_x_2d + x_range/2)
+        self.ax.set_ylim(self.center_y_2d - y_range/2, self.center_y_2d + y_range/2)
+        self.ax.set_autoscale_on(False)
         self.canvas.draw_idle()
 
     # --- MATPLOTLIB EVENTS (HOVER & ROTATION) ---
@@ -542,12 +549,13 @@ class DensoViewerApp(QMainWindow):
             self.dragging = True
             self.mouse_x = event.x
             self.mouse_y = event.y
+            
             if self.map_mode == '3d':
                 self.start_elev = self.ax.elev
                 self.start_azim = self.ax.azim
             else:
-                self.start_xlim = self.ax.get_xlim()
-                self.start_ylim = self.ax.get_ylim()
+                self.start_center_x_2d = self.center_x_2d
+                self.start_center_y_2d = self.center_y_2d
 
     def on_mouse_release(self, event):
         self.dragging = False
@@ -583,17 +591,21 @@ class DensoViewerApp(QMainWindow):
             
             # --- 2D Pan ---
             else:
-                if event.xdata is None or event.ydata is None: return
-                dx = event.xdata - self.mouse_x_data
-                dy = event.ydata - self.mouse_y_data
-                self.ax.set_xlim(self.start_xlim[0] - dx, self.start_xlim[1] - dx)
-                self.ax.set_ylim(self.start_ylim[0] - dy, self.start_ylim[1] - dy)
-                self.canvas.draw_idle()
+                dx_pixels = event.x - self.mouse_x
+                dy_pixels = event.y - self.mouse_y
+                
+                inv = self.ax.transData.inverted()
+                x0, y0 = inv.transform((0, 0))
+                x1, y1 = inv.transform((1, 1))
+                
+                data_dx_per_pixel = x1 - x0
+                data_dy_per_pixel = y1 - y0
+                
+                self.center_x_2d = self.start_center_x_2d - (dx_pixels * data_dx_per_pixel)
+                self.center_y_2d = self.start_center_y_2d - (dy_pixels * data_dy_per_pixel)
+                
+                self.apply_2d_zoom()
             return
-            
-        else:
-            self.mouse_x_data = event.xdata
-            self.mouse_y_data = event.ydata
             
         # 2. Handling Hover
         if getattr(event, 'inaxes', None) != self.ax or len(self.z_flat) == 0:
@@ -734,12 +746,26 @@ class DensoViewerApp(QMainWindow):
             self.z_max = matrix_z.max()
             
             if self.current_map_addr != map_addr:
+                self.current_map_addr = map_addr
+                
+                # Reseteos de 3D
                 self.abs_center_x = (size_x - 1) / 2.0
                 self.abs_center_y = (size_y - 1) / 2.0
                 self.center_x = self.abs_center_x
                 self.center_y = self.abs_center_y
                 self.cam_zoom = 1.0 
-                self.current_map_addr = map_addr
+                
+                # Reseteos de 2D y limites absolutos
+                x_margin = (axis_x.max() - axis_x.min()) * 0.05
+                if x_margin == 0: x_margin = 1.0
+                y_margin = (matrix_z.max() - matrix_z.min()) * 0.05
+                if y_margin == 0: y_margin = 1.0
+                
+                self.abs_xlim = (axis_x.min() - x_margin, axis_x.max() + x_margin)
+                self.abs_ylim = (matrix_z.min() - y_margin, matrix_z.max() + y_margin)
+                self.center_x_2d = (self.abs_xlim[0] + self.abs_xlim[1]) / 2.0
+                self.center_y_2d = (self.abs_ylim[0] + self.abs_ylim[1]) / 2.0
+                self.cam_zoom_2d = 1.0
             
             title = f"Map {self.current_index + 1}/{self.total_maps} | Addr: {map_addr} | Z: {current_fmt} | Factor: {current_factor}"
             self.lbl_title.setText(title)
@@ -787,6 +813,7 @@ class DensoViewerApp(QMainWindow):
                     self.ax.set_xlabel('X Axis')
                     self.ax.set_ylabel('Curve Data')
                     self.ax.grid(True, linestyle='--', alpha=0.7)
+                    self.apply_2d_zoom()
 
                 self.canvas.draw_idle()
                 
@@ -826,5 +853,5 @@ class DensoViewerApp(QMainWindow):
 if __name__ == "__main__":
     app = QApplication(sys.argv)
     viewer = DensoViewerApp()
-    viewer.show()
+    viewer.showMaximized()
     sys.exit(app.exec())
