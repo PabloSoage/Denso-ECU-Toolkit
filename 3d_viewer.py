@@ -11,9 +11,10 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QHBoxLayout, QV
                              QListWidget, QLineEdit, QPushButton, QLabel, QStackedWidget,
                              QTableWidget, QTableWidgetItem, QGroupBox, QRadioButton,
                              QFormLayout, QDialog, QDialogButtonBox, QDoubleSpinBox,
-                             QTabWidget, QFileDialog, QMessageBox, QCheckBox)
-from PyQt6.QtCore import Qt, QEvent, QPointF, QRectF
-from PyQt6.QtGui import QPainter, QColor, QPolygonF, QBrush
+                             QTabWidget, QFileDialog, QMessageBox, QCheckBox, QTableView,
+                             QStyledItemDelegate, QInputDialog)
+from PyQt6.QtCore import Qt, QEvent, QPointF, QRectF, QAbstractTableModel, QModelIndex, QVariant
+from PyQt6.QtGui import QPainter, QColor, QPolygonF, QBrush, QFont, QKeySequence, QShortcut
 
 # ================= DEFAULT CONFIGURATION =================
 DEFAULT_CSV_3D = "3d_maps_review.csv"
@@ -70,6 +71,200 @@ class SparklineWidget(QWidget):
                 # Slightly wider width by reducing the subtraction from 1 to 0.5.
                 painter.drawRect(QRectF(x, y, max(1.0, bar_w - 0.5), bar_h))
 
+
+class HexMapDelegate(QStyledItemDelegate):
+    def paint(self, painter, option, index):
+        spark_data = index.data(Qt.ItemDataRole.UserRole + 1)
+        if spark_data:
+            values = spark_data.get('values', [])
+            style = spark_data.get('style', 'Bars')
+            if not values:
+                return
+
+            painter.save()
+            painter.fillRect(option.rect, QColor(0, 0, 0))
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+            w = option.rect.width()
+            h = option.rect.height()
+            x_off = option.rect.x()
+            y_off = option.rect.y()
+
+            painter.setBrush(QBrush(QColor(0, 255, 0)))
+            
+            min_val = min(values)
+            max_val = max(values)
+
+            if min_val == max_val:
+                if style == 'Line':
+                    painter.setPen(QColor(0, 255, 0))
+                    poly = QPolygonF([QPointF(x_off, y_off + h), QPointF(x_off + w, y_off + h)])
+                    painter.drawPolygon(poly)
+            else:
+                painter.setPen(Qt.PenStyle.NoPen)
+                if style == 'Line':
+                    pts = [QPointF(x_off, y_off + h)]
+                    for i, val in enumerate(values):
+                        x = x_off + i * (w / max(1, len(values) - 1))
+                        y = y_off + h - ((val - min_val) / (max_val - min_val)) * h
+                        pts.append(QPointF(x, y))
+                    pts.append(QPointF(x_off + w, y_off + h))
+                    painter.drawPolygon(QPolygonF(pts))
+                else:
+                    num_bars = len(values)
+                    bar_w = w / num_bars
+                    for i, val in enumerate(values):
+                        bx = x_off + i * bar_w
+                        y_norm = (val - min_val) / (max_val - min_val)
+                        bar_h = y_norm * (h - 2)
+                        by = y_off + h - 1 - bar_h
+                        painter.drawRect(QRectF(bx, by, max(1.0, bar_w - 0.5), bar_h))
+            painter.restore()
+            return
+
+        # Draw background and text (default behavior)
+        super().paint(painter, option, index)
+            
+        borders = index.data(Qt.ItemDataRole.UserRole)
+        if borders:
+            edges = borders.get('edges', 0)
+            color = borders.get('color')
+            tag = borders.get('tag', '')
+                
+            painter.save()
+            pen = painter.pen()
+            pen.setColor(color)
+            pen.setWidth(2)
+            painter.setPen(pen)
+                
+            rect = option.rect
+            x = rect.x()
+            y = rect.y()
+            r = rect.right() - 1
+            b = rect.bottom() - 1
+            
+            # Map outline
+            if edges & 1: painter.drawLine(x, y, r, y)       # Top
+            if edges & 2: painter.drawLine(x, b, r, b)       # Bottom
+            if edges & 4: painter.drawLine(x, y, x, b)       # Left
+            if edges & 8: painter.drawLine(r, y, r, b)       # Right
+            
+            # Draw tag if this is the start of the map
+            if tag:
+                font = painter.font()
+                font.setPointSize(8)
+                font.setBold(True)
+                painter.setFont(font)
+                fm = painter.fontMetrics()
+                tw = fm.horizontalAdvance(tag) + 6
+                th = fm.height() + 2
+                
+                tag_rect = QRectF(x, y, tw, th)
+                painter.fillRect(tag_rect, QColor(0, 0, 0, 180)) # semi-transparent black
+                painter.setPen(color) # colored text
+                painter.drawText(tag_rect, Qt.AlignmentFlag.AlignCenter, tag)
+                
+            painter.restore()
+
+class HexTableModel(QAbstractTableModel):
+    def __init__(self, bin_data, map_array, map_dicts, fmt='>B', sparkline_style='Bars'):
+        super().__init__()
+        self.update_settings(bin_data, map_array, map_dicts, fmt, sparkline_style)
+
+    def update_settings(self, bin_data, map_array, map_dicts, fmt, sparkline_style):
+        self.bin_data = bin_data
+        self.map_array = map_array
+        self.map_dicts = map_dicts
+        self.fmt = fmt
+        self.endian = fmt[0]
+        self.fmt_char = fmt[-1]
+        
+        if self.fmt_char.lower() == 'f': self.bytes_per_col = 4
+        elif self.fmt_char.lower() == 'h': self.bytes_per_col = 2
+        else: self.bytes_per_col = 1
+            
+        self.data_cols = max(1, 16 // self.bytes_per_col)
+        self.sparkline_style = sparkline_style
+        self.layoutChanged.emit()
+
+    def rowCount(self, parent=QModelIndex()):
+        if not self.bin_data: return 0
+        return (len(self.bin_data) + 15) // 16
+
+    def columnCount(self, parent=QModelIndex()):
+        return self.data_cols + 1
+
+    def headerData(self, section, orientation, role=Qt.ItemDataRole.DisplayRole):
+        if role == Qt.ItemDataRole.DisplayRole:
+            if orientation == Qt.Orientation.Horizontal:
+                if section == self.data_cols:
+                    return "Profile"
+                return f"{section * self.bytes_per_col:02X}"
+            else:
+                return f"{section*16:08X}"
+        return QVariant()
+
+    def data(self, index, role=Qt.ItemDataRole.DisplayRole):
+        if not index.isValid(): return QVariant()
+        
+        is_sparkline = (index.column() == self.data_cols)
+        
+        if is_sparkline:
+            if role == Qt.ItemDataRole.UserRole + 1:
+                row_addr = index.row() * 16
+                end_addr = min(row_addr + 16, len(self.bin_data))
+                val_bytes = self.bin_data[row_addr:end_addr]
+                values = []
+                for i in range(0, len(val_bytes), self.bytes_per_col):
+                    chunk = val_bytes[i:i+self.bytes_per_col]
+                    if len(chunk) < self.bytes_per_col: break
+                    try:
+                        val = struct.unpack(f"{self.endian}{self.fmt_char}", chunk)[0]
+                        values.append(val)
+                    except: pass
+                if not values: return QVariant()
+                return {'values': values, 'style': self.sparkline_style}
+            return QVariant()
+            
+        col_offset = index.column() * self.bytes_per_col
+        addr = index.row() * 16 + col_offset
+        
+        if role == Qt.ItemDataRole.DisplayRole:
+            if addr + self.bytes_per_col <= len(self.bin_data):
+                val_bytes = self.bin_data[addr:addr+self.bytes_per_col]
+                if self.bytes_per_col == 1:
+                    return f"{val_bytes[0]:02X}"
+                elif self.bytes_per_col == 2:
+                    val = struct.unpack(f"{self.endian}H", val_bytes)[0]
+                    return f"{val:04X}"
+                elif self.bytes_per_col == 4:
+                    val = struct.unpack(f"{self.endian}I", val_bytes)[0]
+                    return f"{val:08X}"
+            return "??"
+            
+        elif role == Qt.ItemDataRole.UserRole:
+            if not self.map_array or addr >= len(self.map_array): return QVariant()
+            
+            mid = self.map_array[addr]
+            if mid == -1: return QVariant()
+            
+            # Check edge neighbors to determine outlines
+            edges = 0
+            if addr < 16 or self.map_array[addr - 16] != mid: edges |= 1 # Top
+            if addr + 16 >= len(self.map_array) or self.map_array[addr + 16] != mid: edges |= 2 # Bottom
+            if col_offset == 0 or addr == 0 or self.map_array[addr - self.bytes_per_col] != mid: edges |= 4 # Left
+            if col_offset + self.bytes_per_col >= 16 or addr + self.bytes_per_col >= len(self.map_array) or self.map_array[addr + self.bytes_per_col] != mid: edges |= 8 # Right
+            
+            info = self.map_dicts.get(mid)
+            if not info: return QVariant()
+            
+            tag = info['tag'] if info['addr'] == addr else ''
+            return {'edges': edges, 'color': info['color'], 'tag': tag}
+            
+        elif role == Qt.ItemDataRole.TextAlignmentRole:
+            return Qt.AlignmentFlag.AlignCenter
+            
+        return QVariant()
 
 class CustomCanvas(FigureCanvas):
     def __init__(self, fig, parent):
@@ -146,6 +341,10 @@ class DensoViewerApp(QMainWindow):
         self.display_hex = False 
         self.apply_factor_to_hex = False 
         self.sparkline_style = 'Bars'    
+        self.highlight_3d = True
+        self.highlight_2d = True
+        self.bin_data = b""
+        self.color_map = None
         
         # --- Independized Factors ---
         self.factor_z_3d = 0.0025
@@ -273,9 +472,13 @@ class DensoViewerApp(QMainWindow):
         self.btn_hex.setVisible(False)
         toolbar_layout.addWidget(self.btn_hex)
         
-        btn_toggle = QPushButton("Toggle Plot / Table")
-        btn_toggle.clicked.connect(self.toggle_view)
-        toolbar_layout.addWidget(btn_toggle)
+        self.btn_main_mode = QPushButton("Mode: Map Viewer")
+        self.btn_main_mode.clicked.connect(self.toggle_main_mode)
+        toolbar_layout.addWidget(self.btn_main_mode)
+        
+        self.btn_toggle = QPushButton("View: Plot")
+        self.btn_toggle.clicked.connect(self.toggle_view)
+        toolbar_layout.addWidget(self.btn_toggle)
         
         btn_settings = QPushButton("⚙ Settings")
         btn_settings.clicked.connect(self.open_settings)
@@ -303,7 +506,17 @@ class DensoViewerApp(QMainWindow):
         self.table = QTableWidget()
         self.stacked_widget.addWidget(self.table)
         
+        # Hex Table
+        self.hex_table = QTableView()
+        self.hex_table.setItemDelegate(HexMapDelegate())
+        self.hex_table.selectionModel() # Will assign in update_hex_view
+        self.stacked_widget.addWidget(self.hex_table)
+        
         right_panel.addWidget(self.stacked_widget, 1)
+        
+        # Shortcuts
+        self.shortcut_g = QShortcut(QKeySequence("G"), self)
+        self.shortcut_g.activated.connect(self.goto_hex_address)
         
         self.status_lbl = QLabel("Hover over the graph to see values...")
         self.status_lbl.setStyleSheet("background-color: #222; color: #FFF; font-weight: bold; font-size: 14px; padding: 8px; border-radius: 4px;")
@@ -352,17 +565,38 @@ class DensoViewerApp(QMainWindow):
             vis_idx = self.filtered_indices.index(self.current_index)
             self.map_listbox.setCurrentRow(vis_idx)
 
+    def toggle_main_mode(self):
+        modes = ['Map Viewer', 'Hex Dump']
+        current = self.btn_main_mode.text().replace("Mode: ", "")
+        idx = modes.index(current)
+        new_mode = modes[(idx + 1) % len(modes)]
+        self.btn_main_mode.setText(f"Mode: {new_mode}")
+        
+        if new_mode == 'Map Viewer':
+            self.btn_toggle.setVisible(True)
+            self.stacked_widget.setCurrentIndex(0 if self.view_mode == 'plot' else 1)
+            self.btn_hex.setVisible(self.view_mode == 'table')
+        else:
+            self.btn_toggle.setVisible(False)
+            self.btn_hex.setVisible(False)
+            self.stacked_widget.setCurrentIndex(2) # Hex Table
+        self.draw_map()
+
     def toggle_view(self):
         if self.view_mode == 'plot':
             self.view_mode = 'table'
-            self.stacked_widget.setCurrentIndex(1)
-            self.btn_hex.setVisible(True) 
+            self.btn_toggle.setText("View: Table")
+            if self.btn_main_mode.text() == "Mode: Map Viewer":
+                self.stacked_widget.setCurrentIndex(1)
+                self.btn_hex.setVisible(True)
         else:
             self.view_mode = 'plot'
-            self.stacked_widget.setCurrentIndex(0)
-            self.btn_hex.setVisible(False)
+            self.btn_toggle.setText("View: Plot")
+            if self.btn_main_mode.text() == "Mode: Map Viewer":
+                self.stacked_widget.setCurrentIndex(0)
+                self.btn_hex.setVisible(False)
         self.draw_map()
-        
+
     def toggle_hex(self):
         self.display_hex = not self.display_hex
         self.btn_hex.setStyleSheet("background-color: #ffcccc;" if self.display_hex else "")
@@ -492,11 +726,19 @@ class DensoViewerApp(QMainWindow):
         vbox_m.addWidget(gb_math)
         
         # Table and Hex Settings
-        gb_tbl = QGroupBox("Table Settings")
+        gb_tbl = QGroupBox("Table & Hex Settings")
         ly_tbl = QVBoxLayout()
-        self.cb_hex_f = QCheckBox("Apply Factor/Offset to Hex View")
+        self.cb_hex_f = QCheckBox("Apply Factor/Offset to Hex View (Table)")
         self.cb_hex_f.setChecked(self.apply_factor_to_hex)
         ly_tbl.addWidget(self.cb_hex_f)
+        
+        self.cb_hl_3d = QCheckBox("Highlight 3D Maps in Hex Mode (Blue)")
+        self.cb_hl_3d.setChecked(self.highlight_3d)
+        ly_tbl.addWidget(self.cb_hl_3d)
+        
+        self.cb_hl_2d = QCheckBox("Highlight 2D Maps in Hex Mode (Green)")
+        self.cb_hl_2d.setChecked(self.highlight_2d)
+        ly_tbl.addWidget(self.cb_hl_2d)
         
         ly_spark = QHBoxLayout()
         ly_spark.addWidget(QLabel("Sparkline Style:"))
@@ -559,6 +801,8 @@ class DensoViewerApp(QMainWindow):
             self.offset_z_2d = spin_o_2d.value()
             
             self.apply_factor_to_hex = self.cb_hex_f.isChecked()
+            self.highlight_3d = self.cb_hl_3d.isChecked()
+            self.highlight_2d = self.cb_hl_2d.isChecked()
             self.sparkline_style = 'Bars' if rb_sp1.isChecked() else 'Line'
             
             self.draw_map()
@@ -803,6 +1047,119 @@ class DensoViewerApp(QMainWindow):
         except: return "ERR"
 
     # --- RENDERING ---
+    def build_color_map(self):
+        if not os.path.exists(self.bin_path): return
+        try:
+            with open(self.bin_path, "rb") as f:
+                self.bin_data = f.read()
+        except: return
+        
+        self.map_array = [-1] * len(self.bin_data)
+        self.map_dicts = {}
+        
+        def get_bperval(fmt):
+            f = fmt[-1].lower()
+            if f == 'f': return 4
+            elif f == 'h': return 2
+            return 1
+            
+        map_id = 0
+            
+        if self.highlight_3d and os.path.exists(self.csv_3d_path):
+            try:
+                df3 = pd.read_csv(self.csv_3d_path, dtype=str)
+                bpv = get_bperval(self.z_format_3d)
+                for _, row in df3.iterrows():
+                    addr_str = str(row.get('Map_Z_Addr', '0')).strip()
+                    addr = int(addr_str, 16)
+                    sx = int(row.get('Size_X', 1))
+                    sy = int(row.get('Size_Y', 1))
+                    length = sx * sy * bpv
+                    if addr + length <= len(self.map_array):
+                        for i in range(addr, addr + length):
+                            self.map_array[i] = map_id
+                        self.map_dicts[map_id] = {
+                            'color': QColor(0, 191, 255), # DeepSkyBlue
+                            'tag': f"3D {addr_str} {sx}x{sy}",
+                            'addr': addr
+                        }
+                    map_id += 1
+            except: pass
+            
+        if self.highlight_2d and os.path.exists(self.csv_2d_path):
+            try:
+                df2 = pd.read_csv(self.csv_2d_path, dtype=str)
+                bpv = get_bperval(self.z_format_2d)
+                for _, row in df2.iterrows():
+                    addr_str = str(row.get('Curve_Data_Addr', '0')).strip()
+                    addr = int(addr_str, 16)
+                    sx = int(row.get('Size_X', 1))
+                    length = sx * bpv
+                    if addr + length <= len(self.map_array):
+                        for i in range(addr, addr + length):
+                            self.map_array[i] = map_id
+                        self.map_dicts[map_id] = {
+                            'color': QColor(50, 205, 50), # LimeGreen
+                            'tag': f"2D {addr_str} {sx}x1",
+                            'addr': addr
+                        }
+                    map_id += 1
+            except: pass
+
+    def on_hex_selection_changed(self, current, previous):
+        if not current.isValid(): return
+        
+        if current.column() == self.hex_table_model.data_cols:
+            self.status_lbl.setText("Hex Cursor: Row Profile")
+            return
+            
+        bpc = self.hex_table_model.bytes_per_col
+        addr = current.row() * 16 + current.column() * bpc
+        self.status_lbl.setText(f"Hex Cursor: {addr:08X}  ({addr})")
+
+    def goto_hex_address(self):
+        if self.stacked_widget.currentIndex() != 2: return
+        addr_str, ok = QInputDialog.getText(self, "Goto Address", "Enter Hex Address:")
+        if ok and addr_str:
+            try:
+                addr = int(addr_str.replace('0x', ''), 16)
+                if not hasattr(self, 'hex_table_model'): return
+                bpc = self.hex_table_model.bytes_per_col
+                row = addr // 16
+                col = (addr % 16) // bpc
+                idx = self.hex_table_model.index(row, col)
+                self.hex_table.scrollTo(idx, QTableView.ScrollHint.PositionAtTop)
+                self.hex_table.setCurrentIndex(idx)
+            except: pass
+
+    def update_hex_view(self):
+        self.build_color_map()
+        
+        fmt = self.z_format_3d if self.map_mode == '3d' else self.z_format_2d
+        
+        if not hasattr(self, 'hex_table_model'):
+            self.hex_table_model = HexTableModel(self.bin_data, self.map_array, self.map_dicts, fmt, self.sparkline_style)
+            self.hex_table.setModel(self.hex_table_model)
+            self.hex_table.setFont(QFont("Courier New", 10))
+            self.hex_table.selectionModel().currentChanged.connect(self.on_hex_selection_changed)
+        else:
+            self.hex_table_model.update_settings(self.bin_data, self.map_array, self.map_dicts, fmt, self.sparkline_style)
+            
+        bpc = self.hex_table_model.bytes_per_col
+        for i in range(self.hex_table_model.data_cols):
+            self.hex_table.setColumnWidth(i, 35 if bpc == 1 else (55 if bpc == 2 else 95))
+        self.hex_table.setColumnWidth(self.hex_table_model.data_cols, 150)
+            
+        if not self.df.empty:
+            addr_col = 'Map_Z_Addr' if self.map_mode == '3d' else 'Curve_Data_Addr'
+            curr_addr_hex = str(self.df.iloc[self.current_index].get(addr_col, '0')).strip()
+            try:
+                addr_int = int(curr_addr_hex, 16)
+                idx = self.hex_table_model.index(addr_int // 16, (addr_int % 16) // bpc)
+                self.hex_table.scrollTo(idx, QTableView.ScrollHint.PositionAtTop)
+                self.hex_table.setCurrentIndex(idx)
+            except: pass
+
     def draw_map(self):
         if self.df.empty: return
         try:
@@ -854,7 +1211,9 @@ class DensoViewerApp(QMainWindow):
             title = f"Map {self.current_index + 1}/{self.total_maps} | Addr: {map_addr} | Z: {current_fmt} | Factor: {current_factor}"
             self.lbl_title.setText(title)
 
-            if self.view_mode == 'plot':
+            if self.btn_main_mode.text() == "Mode: Hex Dump":
+                self.update_hex_view()
+            elif self.view_mode == 'plot':
                 self.ax.clear()
                 
                 if self.map_mode == '3d':
