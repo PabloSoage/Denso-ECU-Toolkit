@@ -48,6 +48,12 @@ class SparklineWidget(QWidget):
             if self.style == 'Line':
                 poly = QPolygonF([QPointF(0, h), QPointF(w, h)])
                 painter.drawPolygon(poly)
+            else:
+                num_bars = len(self.data)
+                bar_w = w / num_bars
+                for i in range(num_bars):
+                    x = i * bar_w
+                    painter.drawRect(QRectF(x, h - 2, max(1.0, bar_w - 0.5), 2))
             return
 
         if self.style == 'Line':
@@ -100,6 +106,14 @@ class HexMapDelegate(QStyledItemDelegate):
                     painter.setPen(QColor(0, 255, 0))
                     poly = QPolygonF([QPointF(x_off, y_off + h), QPointF(x_off + w, y_off + h)])
                     painter.drawPolygon(poly)
+                else:
+                    painter.setPen(Qt.PenStyle.NoPen)
+                    num_bars = len(values)
+                    bar_w = w / num_bars
+                    for i in range(num_bars):
+                        bx = x_off + i * bar_w
+                        # Dibuja barritas de 2px de alto en la base para filas planas
+                        painter.drawRect(QRectF(bx, y_off + h - 2, max(1.0, bar_w - 0.5), 2))
             else:
                 painter.setPen(Qt.PenStyle.NoPen)
                 if style == 'Line':
