@@ -11,7 +11,7 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QHBoxLayout, QV
                              QListWidget, QLineEdit, QPushButton, QLabel, QStackedWidget,
                              QTableWidget, QTableWidgetItem, QGroupBox, QRadioButton,
                              QFormLayout, QDialog, QDialogButtonBox, QDoubleSpinBox,
-                             QTabWidget, QFileDialog, QMessageBox, QCheckBox, QTableView,
+                             QTabWidget, QFileDialog, QMessageBox, QCheckBox, QTableView, QComboBox,
                              QStyledItemDelegate, QInputDialog, QSplitter, QMenu)
 from PyQt6.QtCore import Qt, QEvent, QPointF, QRectF, QAbstractTableModel, QModelIndex, QVariant
 from PyQt6.QtGui import QAction, QPainter, QColor, QPolygonF, QBrush, QFont, QKeySequence, QShortcut
@@ -601,43 +601,64 @@ class DensoViewerApp(QMainWindow):
         tab_fmt = QWidget()
         vbox_fmt = QVBoxLayout(tab_fmt)
         
-        gb_z3d = QGroupBox("3D Data Format (Z)")
-        ly_z3d = QVBoxLayout()
-        rb_3d_h = QRadioButton("16-bit Big Endian (>H)")
-        rb_3d_l = QRadioButton("16-bit Little Endian (<H)")
-        rb_3d_b = QRadioButton("8-bit Unsigned (>B)")
-        rb_3d_f = QRadioButton("32-bit Float (>f)")
-        if self.data_manager.z_format_3d == '>H': rb_3d_h.setChecked(True)
-        elif self.data_manager.z_format_3d == '<H': rb_3d_l.setChecked(True)
-        elif self.data_manager.z_format_3d == '>B': rb_3d_b.setChecked(True)
-        else: rb_3d_f.setChecked(True)
-        ly_z3d.addWidget(rb_3d_h); ly_z3d.addWidget(rb_3d_l); ly_z3d.addWidget(rb_3d_b); ly_z3d.addWidget(rb_3d_f)
-        gb_z3d.setLayout(ly_z3d)
-        vbox_fmt.addWidget(gb_z3d)
+        def parse_fmt(f_str):
+            if not f_str: return "16-bit", ">", False
+            endian = "<" if "<" in f_str else ">"
+            c = f_str[-1].lower()
+            if c == 'f': size = "Float"
+            elif c == 'b': size = "8-bit"
+            elif c == 'i' or c == 'l': size = "32-bit"
+            else: size = "16-bit" # default H/h
+            signed = f_str[-1].islower()
+            if size == 'Float': signed = True
+            return size, endian, signed
 
-        gb_z2d = QGroupBox("2D Data Format (Curve)")
-        ly_z2d = QVBoxLayout()
-        rb_2d_h = QRadioButton("16-bit Big Endian (>H)")
-        rb_2d_l = QRadioButton("16-bit Little Endian (<H)")
-        rb_2d_b = QRadioButton("8-bit Unsigned (>B)")
-        rb_2d_f = QRadioButton("32-bit Float (>f)")
-        if self.data_manager.z_format_2d == '>H': rb_2d_h.setChecked(True)
-        elif self.data_manager.z_format_2d == '<H': rb_2d_l.setChecked(True)
-        elif self.data_manager.z_format_2d == '>B': rb_2d_b.setChecked(True)
-        else: rb_2d_f.setChecked(True)
-        ly_z2d.addWidget(rb_2d_h); ly_z2d.addWidget(rb_2d_l); ly_z2d.addWidget(rb_2d_b); ly_z2d.addWidget(rb_2d_f)
-        gb_z2d.setLayout(ly_z2d)
-        vbox_fmt.addWidget(gb_z2d)
+        size3, end3, sign3 = parse_fmt(self.data_manager.z_format_3d)
+        size2, end2, sign2 = parse_fmt(self.data_manager.z_format_2d)
         
-        gb_a = QGroupBox("Axis Format")
-        ly_a = QVBoxLayout()
-        rb_a1 = QRadioButton("32-bit Float (f)")
-        rb_a2 = QRadioButton("16-bit Int (H)")
-        if self.data_manager.ax_format == 'f': rb_a1.setChecked(True)
-        else: rb_a2.setChecked(True)
-        ly_a.addWidget(rb_a1); ly_a.addWidget(rb_a2)
-        gb_a.setLayout(ly_a)
-        vbox_fmt.addWidget(gb_a)
+        # Determine global values (fallback to 3D if they mismatch)
+        is_little_endian = (end3 == "<")
+        is_signed = sign3
+
+        gb_global = QGroupBox("Global Rules")
+        ly_global = QVBoxLayout()
+        
+        self.cb_endian = QCheckBox("Little Endian (LoHi) - Uncheck for Big Endian (HiLo)")
+        self.cb_endian.setChecked(is_little_endian)
+        ly_global.addWidget(self.cb_endian)
+        
+        self.cb_signed = QCheckBox("Signed - Uncheck for Unsigned")
+        self.cb_signed.setChecked(is_signed)
+        ly_global.addWidget(self.cb_signed)
+        
+        gb_global.setLayout(ly_global)
+        vbox_fmt.addWidget(gb_global)
+
+        gb_sizes = QGroupBox("Data Sizes")
+        ly_sizes = QFormLayout()
+        
+        self.cmb_3d = QComboBox()
+        self.cmb_3d.addItems(["8-bit", "16-bit", "32-bit", "Float"])
+        self.cmb_3d.setCurrentText(size3)
+        ly_sizes.addRow("3D Data Size:", self.cmb_3d)
+
+        self.cmb_2d = QComboBox()
+        self.cmb_2d.addItems(["8-bit", "16-bit", "32-bit", "Float"])
+        self.cmb_2d.setCurrentText(size2)
+        ly_sizes.addRow("2D Data Size:", self.cmb_2d)
+
+        sz_ax_map = {'b': '8-bit', 'h': '16-bit', 'i': '32-bit', 'f': 'Float'}
+        sz_a_char = self.data_manager.ax_format.lower() if self.data_manager.ax_format else 'h'
+        size_a = sz_ax_map.get(sz_a_char, '16-bit')
+
+        self.cmb_ax = QComboBox()
+        self.cmb_ax.addItems(["8-bit", "16-bit", "32-bit", "Float"])
+        self.cmb_ax.setCurrentText(size_a)
+        ly_sizes.addRow("Axis Size:", self.cmb_ax)
+        
+        gb_sizes.setLayout(ly_sizes)
+        vbox_fmt.addWidget(gb_sizes)
+
         vbox_fmt.addStretch()
         tabs.addTab(tab_fmt, "Format")
         
@@ -753,18 +774,25 @@ class DensoViewerApp(QMainWindow):
                 self.map_mode = new_mode
                 self.load_data() 
             
-            if rb_3d_h.isChecked(): self.data_manager.z_format_3d = '>H'
-            elif rb_3d_l.isChecked(): self.data_manager.z_format_3d = '<H'
-            elif rb_3d_b.isChecked(): self.data_manager.z_format_3d = '>B'
-            else: self.data_manager.z_format_3d = '>f'
-
-            if rb_2d_h.isChecked(): self.data_manager.z_format_2d = '>H'
-            elif rb_2d_l.isChecked(): self.data_manager.z_format_2d = '<H'
-            elif rb_2d_b.isChecked(): self.data_manager.z_format_2d = '>B'
-            else: self.data_manager.z_format_2d = '>f'
+            is_little = self.cb_endian.isChecked()
+            is_signed = self.cb_signed.isChecked()
+            endian = '<' if is_little else '>'
             
-            if rb_a1.isChecked(): self.data_manager.ax_format = 'f'
-            else: self.data_manager.ax_format = 'H'
+            def build_fmt(size_str, signed):
+                if size_str == 'Float': return 'f'
+                elif size_str == '8-bit': char = 'b' if signed else 'B'
+                elif size_str == '16-bit': char = 'h' if signed else 'H'
+                else: char = 'i' if signed else 'I'
+                return char
+
+            char_3d = build_fmt(self.cmb_3d.currentText(), is_signed)
+            self.data_manager.z_format_3d = endian + char_3d
+            
+            char_2d = build_fmt(self.cmb_2d.currentText(), is_signed)
+            self.data_manager.z_format_2d = endian + char_2d
+            
+            char_ax = build_fmt(self.cmb_ax.currentText(), is_signed)
+            self.data_manager.ax_format = char_ax
             
             if rb_r1.isChecked(): self.rot_mode = 'Z'
             elif rb_r2.isChecked(): self.rot_mode = 'WinOLS'
