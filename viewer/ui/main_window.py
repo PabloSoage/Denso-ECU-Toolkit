@@ -22,337 +22,35 @@ DEFAULT_CSV_2D = "2d_maps_review.csv"
 DEFAULT_BIN = "115_e3a4d17c28.bin"       
 # =========================================================
 
-class SparklineWidget(QWidget):
-    """Subclass that draws the sparklines at the end of each row"""
-    def __init__(self, data_row, min_val, max_val, style='Bars'):
-        super().__init__()
-        self.data = data_row
-        self.min_val = min_val
-        self.max_val = max_val
-        self.style = style
-        self.setMinimumWidth(120)
-
-    def paintEvent(self, event):
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        
-        painter.fillRect(self.rect(), QColor(0, 0, 0))
-        
-        w = self.width()
-        h = self.height()
-        
-        painter.setBrush(QBrush(QColor(0, 255, 0)))
-        painter.setPen(Qt.PenStyle.NoPen)
-        
-        if self.max_val == self.min_val:
-            if self.style == 'Line':
-                poly = QPolygonF([QPointF(0, h), QPointF(w, h)])
-                painter.drawPolygon(poly)
-            else:
-                num_bars = len(self.data)
-                bar_w = w / num_bars
-                for i in range(num_bars):
-                    x = i * bar_w
-                    painter.drawRect(QRectF(x, h - 2, max(1.0, bar_w - 0.5), 2))
-            return
-
-        if self.style == 'Line':
-            pts = [QPointF(0, h)]
-            for i, val in enumerate(self.data):
-                x = i * (w / max(1, len(self.data) - 1))
-                y = h - ((val - self.min_val) / (self.max_val - self.min_val)) * h
-                pts.append(QPointF(x, y))
-            pts.append(QPointF(w, h))
-            painter.drawPolygon(QPolygonF(pts))
-        else:
-            # Bars mode (Individual rectangles like WinOLS)
-            num_bars = len(self.data)
-            bar_w = w / num_bars
-            for i, val in enumerate(self.data):
-                x = i * bar_w
-                y_norm = (val - self.min_val) / (self.max_val - self.min_val)
-                bar_h = y_norm * (h - 2)
-                y = h - 1 - bar_h
-                # Float rect instead of int to avoid rounding issues in separation and width. 
-                # Slightly wider width by reducing the subtraction from 1 to 0.5.
-                painter.drawRect(QRectF(x, y, max(1.0, bar_w - 0.5), bar_h))
-
-
-class HexMapDelegate(QStyledItemDelegate):
-    def paint(self, painter, option, index):
-        spark_data = index.data(Qt.ItemDataRole.UserRole + 1)
-        if spark_data:
-            values = spark_data.get('values', [])
-            style = spark_data.get('style', 'Bars')
-            if not values:
-                return
-
-            painter.save()
-            painter.fillRect(option.rect, QColor(0, 0, 0))
-            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-
-            w = option.rect.width()
-            h = option.rect.height()
-            x_off = option.rect.x()
-            y_off = option.rect.y()
-
-            painter.setBrush(QBrush(QColor(0, 255, 0)))
-            
-            min_val = min(values)
-            max_val = max(values)
-
-            if min_val == max_val:
-                if style == 'Line':
-                    painter.setPen(QColor(0, 255, 0))
-                    poly = QPolygonF([QPointF(x_off, y_off + h), QPointF(x_off + w, y_off + h)])
-                    painter.drawPolygon(poly)
-                else:
-                    painter.setPen(Qt.PenStyle.NoPen)
-                    num_bars = len(values)
-                    bar_w = w / num_bars
-                    for i in range(num_bars):
-                        bx = x_off + i * bar_w
-                        # Dibuja barritas de 2px de alto en la base para filas planas
-                        painter.drawRect(QRectF(bx, y_off + h - 2, max(1.0, bar_w - 0.5), 2))
-            else:
-                painter.setPen(Qt.PenStyle.NoPen)
-                if style == 'Line':
-                    pts = [QPointF(x_off, y_off + h)]
-                    for i, val in enumerate(values):
-                        x = x_off + i * (w / max(1, len(values) - 1))
-                        y = y_off + h - ((val - min_val) / (max_val - min_val)) * h
-                        pts.append(QPointF(x, y))
-                    pts.append(QPointF(x_off + w, y_off + h))
-                    painter.drawPolygon(QPolygonF(pts))
-                else:
-                    num_bars = len(values)
-                    bar_w = w / num_bars
-                    for i, val in enumerate(values):
-                        bx = x_off + i * bar_w
-                        y_norm = (val - min_val) / (max_val - min_val)
-                        bar_h = y_norm * (h - 2)
-                        by = y_off + h - 1 - bar_h
-                        painter.drawRect(QRectF(bx, by, max(1.0, bar_w - 0.5), bar_h))
-            painter.restore()
-            return
-
-        # Draw background and text (default behavior)
-        super().paint(painter, option, index)
-            
-        borders = index.data(Qt.ItemDataRole.UserRole)
-        if borders:
-            edges = borders.get('edges', 0)
-            color = borders.get('color')
-            tag = borders.get('tag', '')
-                
-            painter.save()
-            pen = painter.pen()
-            pen.setColor(color)
-            pen.setWidth(2)
-            painter.setPen(pen)
-                
-            rect = option.rect
-            x = rect.x()
-            y = rect.y()
-            r = rect.right() - 1
-            b = rect.bottom() - 1
-            
-            # Map outline
-            if edges & 1: painter.drawLine(x, y, r, y)       # Top
-            if edges & 2: painter.drawLine(x, b, r, b)       # Bottom
-            if edges & 4: painter.drawLine(x, y, x, b)       # Left
-            if edges & 8: painter.drawLine(r, y, r, b)       # Right
-            
-            # Draw tag if this is the start of the map
-            if tag:
-                font = painter.font()
-                font.setPointSize(8)
-                font.setBold(True)
-                painter.setFont(font)
-                fm = painter.fontMetrics()
-                tw = fm.horizontalAdvance(tag) + 6
-                th = fm.height() + 2
-                
-                tag_rect = QRectF(x, y, tw, th)
-                painter.fillRect(tag_rect, QColor(0, 0, 0, 180)) # semi-transparent black
-                painter.setPen(color) # colored text
-                painter.drawText(tag_rect, Qt.AlignmentFlag.AlignCenter, tag)
-                
-            painter.restore()
-
-class HexTableModel(QAbstractTableModel):
-    def __init__(self, bin_data, map_array, map_dicts, fmt='>B', sparkline_style='Bars'):
-        super().__init__()
-        self.update_settings(bin_data, map_array, map_dicts, fmt, sparkline_style)
-
-    def update_settings(self, bin_data, map_array, map_dicts, fmt, sparkline_style):
-        self.bin_data = bin_data
-        self.map_array = map_array
-        self.map_dicts = map_dicts
-        self.fmt = fmt
-        self.endian = fmt[0]
-        self.fmt_char = fmt[-1]
-        
-        if self.fmt_char.lower() == 'f': self.bytes_per_col = 4
-        elif self.fmt_char.lower() == 'h': self.bytes_per_col = 2
-        else: self.bytes_per_col = 1
-            
-        self.data_cols = max(1, 16 // self.bytes_per_col)
-        self.sparkline_style = sparkline_style
-        self.layoutChanged.emit()
-
-    def rowCount(self, parent=QModelIndex()):
-        if not self.bin_data: return 0
-        return (len(self.bin_data) + 15) // 16
-
-    def columnCount(self, parent=QModelIndex()):
-        return self.data_cols + 1
-
-    def headerData(self, section, orientation, role=Qt.ItemDataRole.DisplayRole):
-        if role == Qt.ItemDataRole.DisplayRole:
-            if orientation == Qt.Orientation.Horizontal:
-                if section == self.data_cols:
-                    return "Profile"
-                return f"{section * self.bytes_per_col:02X}"
-            else:
-                return f"{section*16:08X}"
-        return QVariant()
-
-    def data(self, index, role=Qt.ItemDataRole.DisplayRole):
-        if not index.isValid(): return QVariant()
-        
-        is_sparkline = (index.column() == self.data_cols)
-        
-        if is_sparkline:
-            if role == Qt.ItemDataRole.UserRole + 1:
-                row_addr = index.row() * 16
-                end_addr = min(row_addr + 16, len(self.bin_data))
-                val_bytes = self.bin_data[row_addr:end_addr]
-                values = []
-                for i in range(0, len(val_bytes), self.bytes_per_col):
-                    chunk = val_bytes[i:i+self.bytes_per_col]
-                    if len(chunk) < self.bytes_per_col: break
-                    try:
-                        val = struct.unpack(f"{self.endian}{self.fmt_char}", chunk)[0]
-                        values.append(val)
-                    except: pass
-                if not values: return QVariant()
-                return {'values': values, 'style': self.sparkline_style}
-            return QVariant()
-            
-        col_offset = index.column() * self.bytes_per_col
-        addr = index.row() * 16 + col_offset
-        
-        if role == Qt.ItemDataRole.DisplayRole:
-            if addr + self.bytes_per_col <= len(self.bin_data):
-                val_bytes = self.bin_data[addr:addr+self.bytes_per_col]
-                if self.bytes_per_col == 1:
-                    return f"{val_bytes[0]:02X}"
-                elif self.bytes_per_col == 2:
-                    val = struct.unpack(f"{self.endian}H", val_bytes)[0]
-                    return f"{val:04X}"
-                elif self.bytes_per_col == 4:
-                    val = struct.unpack(f"{self.endian}I", val_bytes)[0]
-                    return f"{val:08X}"
-            return "??"
-            
-        elif role == Qt.ItemDataRole.UserRole:
-            if not self.map_array or addr >= len(self.map_array): return QVariant()
-            
-            mid = self.map_array[addr]
-            if mid == -1: return QVariant()
-            
-            # Check edge neighbors to determine outlines
-            edges = 0
-            if addr < 16 or self.map_array[addr - 16] != mid: edges |= 1 # Top
-            if addr + 16 >= len(self.map_array) or self.map_array[addr + 16] != mid: edges |= 2 # Bottom
-            if col_offset == 0 or addr == 0 or self.map_array[addr - self.bytes_per_col] != mid: edges |= 4 # Left
-            if col_offset + self.bytes_per_col >= 16 or addr + self.bytes_per_col >= len(self.map_array) or self.map_array[addr + self.bytes_per_col] != mid: edges |= 8 # Right
-            
-            info = self.map_dicts.get(mid)
-            if not info: return QVariant()
-            
-            tag = info['tag'] if info['addr'] == addr else ''
-            return {'edges': edges, 'color': info['color'], 'tag': tag}
-            
-        elif role == Qt.ItemDataRole.TextAlignmentRole:
-            return Qt.AlignmentFlag.AlignCenter
-            
-        return QVariant()
-
-class CustomCanvas(FigureCanvas):
-    def __init__(self, fig, parent):
-        super().__init__(fig)
-        self.parent_app = parent
-
-    def wheelEvent(self, event):
-        if self.parent_app.view_mode != 'plot': return
-        if not self.underMouse(): return
-        
-        delta = event.angleDelta().y()
-        if delta == 0: return
-        zoom_in = delta > 0
-
-        is_3d = self.parent_app.map_mode == '3d'
-        if self.parent_app.btn_main_mode.text() == "Mode: Hex Dump":
-            is_3d = self.parent_app.hex_plot_mode == '3d'
-
-        if is_3d:
-            factor = 1.15 if zoom_in else 0.85
-            old_zoom = self.parent_app.cam_zoom
-            self.parent_app.cam_zoom = max(1.0, min(self.parent_app.cam_zoom * factor, 15.0))
-            
-            if self.parent_app.cam_zoom == 1.0:
-                self.parent_app.center_x = self.parent_app.abs_center_x
-                self.parent_app.center_y = self.parent_app.abs_center_y
-            elif old_zoom != self.parent_app.cam_zoom:
-                d_zoom = self.parent_app.cam_zoom / old_zoom
-                if zoom_in and self.parent_app.is_hovering:
-                    self.parent_app.center_x = self.parent_app.hover_x - (self.parent_app.hover_x - self.parent_app.center_x) / d_zoom
-                    self.parent_app.center_y = self.parent_app.hover_y - (self.parent_app.hover_y - self.parent_app.center_y) / d_zoom
-                else:
-                    self.parent_app.center_x = self.parent_app.abs_center_x - (self.parent_app.abs_center_x - self.parent_app.center_x) / d_zoom
-                    self.parent_app.center_y = self.parent_app.abs_center_y - (self.parent_app.abs_center_y - self.parent_app.center_y) / d_zoom
-            
-            self.parent_app.apply_3d_zoom()
-            
-        else:
-            factor = 1.15 if zoom_in else 0.85
-            old_zoom = self.parent_app.cam_zoom_2d
-            self.parent_app.cam_zoom_2d = max(1.0, min(self.parent_app.cam_zoom_2d * factor, 50.0))
-            
-            if self.parent_app.cam_zoom_2d == 1.0:
-                self.parent_app.center_x_2d = (self.parent_app.abs_xlim[0] + self.parent_app.abs_xlim[1]) / 2.0
-                self.parent_app.center_y_2d = (self.parent_app.abs_ylim[0] + self.parent_app.abs_ylim[1]) / 2.0
-            elif old_zoom != self.parent_app.cam_zoom_2d:
-                d_zoom = self.parent_app.cam_zoom_2d / old_zoom
-                ax = self.parent_app.ax
-                inv = ax.transData.inverted()
-                pos = getattr(event, 'position', lambda: event.pos())()
-                x_mouse, y_mouse = inv.transform((pos.x(), self.height() - pos.y()))
-                
-                self.parent_app.center_x_2d = x_mouse - (x_mouse - self.parent_app.center_x_2d) / d_zoom
-                self.parent_app.center_y_2d = y_mouse - (y_mouse - self.parent_app.center_y_2d) / d_zoom
-            
-            self.parent_app.apply_2d_zoom()
-
-
+from widgets.sparkline_widget import SparklineWidget
+from widgets.hex_map_delegate import HexMapDelegate
+from widgets.hex_table_model import HexTableModel
+from widgets.custom_canvas import CustomCanvas
+from core.data_manager import DataManager
+import struct
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import os
+import sys
 class DensoViewerApp(QMainWindow):
     def __init__(self):
         super().__init__()
+        self.data_manager = DataManager()
+        
         self.setWindowTitle("Denso Map Viewer")
         self.resize(1400, 850)
         
         # --- File Paths ---
-        self.bin_path = DEFAULT_BIN
-        self.csv_3d_path = DEFAULT_CSV_3D
-        self.csv_2d_path = DEFAULT_CSV_2D
+        self.data_manager.bin_path = DEFAULT_BIN
+        self.data_manager.csv_3d_path = DEFAULT_CSV_3D
+        self.data_manager.csv_2d_path = DEFAULT_CSV_2D
         
         # --- State Variables ---
-        self.df = pd.DataFrame()
-        self.current_index = 0
-        self.total_maps = 0
-        self.current_map_addr = ""
+        self.data_manager.df = pd.DataFrame()
+        self.data_manager.current_index = 0
+        self.data_manager.total_maps = 0
+        self.data_manager.current_map_addr = ""
         
         self.map_mode = '3d'
         self.view_mode = 'plot' 
@@ -364,7 +62,7 @@ class DensoViewerApp(QMainWindow):
         self.hex_plot_visible = True
         self.hex_plot_mode = '3d'
         self.hex_plot_position = 'top'
-        self.bin_data = b""
+        self.data_manager.bin_data = b""
         self.color_map = None
         
         # --- Independized Factors ---
@@ -373,9 +71,9 @@ class DensoViewerApp(QMainWindow):
         self.factor_z_2d = 1.0
         self.offset_z_2d = 0.0
         
-        self.z_format_3d = '>H'
-        self.z_format_2d = '>f'
-        self.ax_format = 'f'
+        self.data_manager.z_format_3d = '>H'
+        self.data_manager.z_format_2d = '>f'
+        self.data_manager.ax_format = 'f'
         self.rot_mode = 'Z' 
         
         # --- Camera and Tracking Variables ---
@@ -408,6 +106,8 @@ class DensoViewerApp(QMainWindow):
         self.z_flat = []
         self.raw_flat = []
         
+        
+        
         self.init_ui()
         self.load_data()
         
@@ -422,24 +122,20 @@ class DensoViewerApp(QMainWindow):
         return super().eventFilter(obj, event)
 
     def load_data(self):
-        target_csv = self.csv_3d_path if self.map_mode == '3d' else self.csv_2d_path
-        if not os.path.exists(target_csv):
-            self.df = pd.DataFrame()
-            self.total_maps = 0
+                                
+        success, msg = self.data_manager.load_csv(self.map_mode)
+        
+                                        
+        if not success:
             self.map_listbox.clear()
-            self.status_lbl.setText(f"File not found: {target_csv}")
+            self.status_lbl.setText(msg)
+            if "File not found" not in msg:
+                QMessageBox.critical(self, "Error", msg)
             return
-
-        try:
-            self.df = pd.read_csv(target_csv, dtype=str)
-            self.total_maps = len(self.df)
-            self.current_index = 0
-            self.current_map_addr = ""
-            self.update_list()
-            self.rebuild_plot_axes()
-            self.draw_map()
-        except Exception as e:
-            QMessageBox.critical(self, "Error", f"Could not read CSV:\n{e}")
+            
+        self.update_list()
+        self.rebuild_plot_axes()
+        self.draw_map()
 
     def rebuild_plot_axes(self):
         self.fig.clf()
@@ -580,13 +276,13 @@ class DensoViewerApp(QMainWindow):
 
     # --- UI LOGIC ---
     def update_list(self):
-        if self.df.empty: return
+        if self.data_manager.df.empty: return
         search_term = self.search_box.text().lower()
         self.map_listbox.clear()
         self.filtered_indices = []
         
         addr_col = 'Map_Z_Addr' if self.map_mode == '3d' else 'Curve_Data_Addr'
-        for idx, row in self.df.iterrows():
+        for idx, row in self.data_manager.df.iterrows():
             addr = str(row.get(addr_col, '')).strip()
             if search_term in addr.lower():
                 self.map_listbox.addItem(f"Map {idx+1}: {addr}")
@@ -599,24 +295,24 @@ class DensoViewerApp(QMainWindow):
         items = self.map_listbox.selectedIndexes()
         if items:
             visual_idx = items[0].row()
-            self.current_index = self.filtered_indices[visual_idx]
+            self.data_manager.current_index = self.filtered_indices[visual_idx]
             self.draw_map()
 
     def prev_map(self):
-        if self.current_index > 0:
-            self.current_index -= 1
+        if self.data_manager.current_index > 0:
+            self.data_manager.current_index -= 1
             self.sync_listbox_selection()
             self.draw_map()
 
     def next_map(self):
-        if self.current_index < self.total_maps - 1:
-            self.current_index += 1
+        if self.data_manager.current_index < self.data_manager.total_maps - 1:
+            self.data_manager.current_index += 1
             self.sync_listbox_selection()
             self.draw_map()
             
     def sync_listbox_selection(self):
-        if self.current_index in self.filtered_indices:
-            vis_idx = self.filtered_indices.index(self.current_index)
+        if self.data_manager.current_index in self.filtered_indices:
+            vis_idx = self.filtered_indices.index(self.data_manager.current_index)
             self.map_listbox.setCurrentRow(vis_idx)
 
     def toggle_main_mode(self):
@@ -760,9 +456,9 @@ class DensoViewerApp(QMainWindow):
             return le
             
         vbox_f.addWidget(QLabel("<b>Paths:</b>"))
-        le_bin = add_file_row(vbox_f, "BIN File:", self.bin_path)
-        le_3d = add_file_row(vbox_f, "3D CSV:", self.csv_3d_path)
-        le_2d = add_file_row(vbox_f, "2D CSV:", self.csv_2d_path)
+        le_bin = add_file_row(vbox_f, "BIN File:", self.data_manager.bin_path)
+        le_3d = add_file_row(vbox_f, "3D CSV:", self.data_manager.csv_3d_path)
+        le_2d = add_file_row(vbox_f, "2D CSV:", self.data_manager.csv_2d_path)
         vbox_f.addStretch()
         tabs.addTab(tab_files, "Files & Mode")
         
@@ -776,9 +472,9 @@ class DensoViewerApp(QMainWindow):
         rb_3d_l = QRadioButton("16-bit Little Endian (<H)")
         rb_3d_b = QRadioButton("8-bit Unsigned (>B)")
         rb_3d_f = QRadioButton("32-bit Float (>f)")
-        if self.z_format_3d == '>H': rb_3d_h.setChecked(True)
-        elif self.z_format_3d == '<H': rb_3d_l.setChecked(True)
-        elif self.z_format_3d == '>B': rb_3d_b.setChecked(True)
+        if self.data_manager.z_format_3d == '>H': rb_3d_h.setChecked(True)
+        elif self.data_manager.z_format_3d == '<H': rb_3d_l.setChecked(True)
+        elif self.data_manager.z_format_3d == '>B': rb_3d_b.setChecked(True)
         else: rb_3d_f.setChecked(True)
         ly_z3d.addWidget(rb_3d_h); ly_z3d.addWidget(rb_3d_l); ly_z3d.addWidget(rb_3d_b); ly_z3d.addWidget(rb_3d_f)
         gb_z3d.setLayout(ly_z3d)
@@ -790,9 +486,9 @@ class DensoViewerApp(QMainWindow):
         rb_2d_l = QRadioButton("16-bit Little Endian (<H)")
         rb_2d_b = QRadioButton("8-bit Unsigned (>B)")
         rb_2d_f = QRadioButton("32-bit Float (>f)")
-        if self.z_format_2d == '>H': rb_2d_h.setChecked(True)
-        elif self.z_format_2d == '<H': rb_2d_l.setChecked(True)
-        elif self.z_format_2d == '>B': rb_2d_b.setChecked(True)
+        if self.data_manager.z_format_2d == '>H': rb_2d_h.setChecked(True)
+        elif self.data_manager.z_format_2d == '<H': rb_2d_l.setChecked(True)
+        elif self.data_manager.z_format_2d == '>B': rb_2d_b.setChecked(True)
         else: rb_2d_f.setChecked(True)
         ly_z2d.addWidget(rb_2d_h); ly_z2d.addWidget(rb_2d_l); ly_z2d.addWidget(rb_2d_b); ly_z2d.addWidget(rb_2d_f)
         gb_z2d.setLayout(ly_z2d)
@@ -802,7 +498,7 @@ class DensoViewerApp(QMainWindow):
         ly_a = QVBoxLayout()
         rb_a1 = QRadioButton("32-bit Float (f)")
         rb_a2 = QRadioButton("16-bit Int (H)")
-        if self.ax_format == 'f': rb_a1.setChecked(True)
+        if self.data_manager.ax_format == 'f': rb_a1.setChecked(True)
         else: rb_a2.setChecked(True)
         ly_a.addWidget(rb_a1); ly_a.addWidget(rb_a2)
         gb_a.setLayout(ly_a)
@@ -902,24 +598,24 @@ class DensoViewerApp(QMainWindow):
         layout.addWidget(btns)
         
         if dialog.exec():
-            self.bin_path = le_bin.text(); self.csv_3d_path = le_3d.text(); self.csv_2d_path = le_2d.text()
+            self.data_manager.bin_path = le_bin.text(); self.data_manager.csv_3d_path = le_3d.text(); self.data_manager.csv_2d_path = le_2d.text()
             new_mode = '3d' if rb_m1.isChecked() else '2d'
             if new_mode != self.map_mode:
                 self.map_mode = new_mode
                 self.load_data() 
             
-            if rb_3d_h.isChecked(): self.z_format_3d = '>H'
-            elif rb_3d_l.isChecked(): self.z_format_3d = '<H'
-            elif rb_3d_b.isChecked(): self.z_format_3d = '>B'
-            else: self.z_format_3d = '>f'
+            if rb_3d_h.isChecked(): self.data_manager.z_format_3d = '>H'
+            elif rb_3d_l.isChecked(): self.data_manager.z_format_3d = '<H'
+            elif rb_3d_b.isChecked(): self.data_manager.z_format_3d = '>B'
+            else: self.data_manager.z_format_3d = '>f'
 
-            if rb_2d_h.isChecked(): self.z_format_2d = '>H'
-            elif rb_2d_l.isChecked(): self.z_format_2d = '<H'
-            elif rb_2d_b.isChecked(): self.z_format_2d = '>B'
-            else: self.z_format_2d = '>f'
+            if rb_2d_h.isChecked(): self.data_manager.z_format_2d = '>H'
+            elif rb_2d_l.isChecked(): self.data_manager.z_format_2d = '<H'
+            elif rb_2d_b.isChecked(): self.data_manager.z_format_2d = '>B'
+            else: self.data_manager.z_format_2d = '>f'
             
-            if rb_a1.isChecked(): self.ax_format = 'f'
-            else: self.ax_format = 'H'
+            if rb_a1.isChecked(): self.data_manager.ax_format = 'f'
+            else: self.data_manager.ax_format = 'H'
             
             if rb_r1.isChecked(): self.rot_mode = 'Z'
             elif rb_r2.isChecked(): self.rot_mode = 'WinOLS'
@@ -1008,7 +704,7 @@ class DensoViewerApp(QMainWindow):
             self.start_azim = self.ax.azim
 
     def on_mouse_move(self, event):
-        if self.df.empty and self.btn_main_mode.text() != "Mode: Hex Dump": return
+        if self.data_manager.df.empty and self.btn_main_mode.text() != "Mode: Hex Dump": return
         
         if self.dragging:
             if event.x is None or event.y is None: return
@@ -1084,7 +780,8 @@ class DensoViewerApp(QMainWindow):
                     
                     if self.display_hex:
                         v_hex = best_z if self.apply_factor_to_hex else self.raw_flat[min_idx]
-                        lbl = f"Target: X = {rx:g}   |   Y = {ry:g}   |   Z (HEX) = {self.val_to_hex(v_hex)}"
+                        fmt = self.data_manager.z_format_3d
+                        lbl = f"Target: X = {rx:g}   |   Y = {ry:g}   |   Z (HEX) = {self.data_manager.val_to_hex(v_hex, fmt[-1], fmt[0])}"
                     else:
                         lbl = f"Target: X = {rx:g}   |   Y = {ry:g}   |   Z = {best_z:.2f}"
                 else:
@@ -1093,7 +790,8 @@ class DensoViewerApp(QMainWindow):
                     self.cursor_marker.set_data([best_x], [best_z])
                     if self.display_hex:
                         v_hex = best_z if self.apply_factor_to_hex else self.raw_flat[min_idx]
-                        lbl = f"Target: X = {best_x:g}   |   Z (HEX) = {self.val_to_hex(v_hex)}"
+                        fmt = self.data_manager.z_format_2d
+                        lbl = f"Target: X = {best_x:g}   |   Z (HEX) = {self.data_manager.val_to_hex(v_hex, fmt[-1], fmt[0])}"
                     else:
                         lbl = f"Target: X = {best_x:g}   |   Z (Curve) = {best_z:.2f}"
 
@@ -1106,141 +804,6 @@ class DensoViewerApp(QMainWindow):
                 self.status_lbl.setText("Hover over the graph to see values...")
                 self.canvas.draw_idle()
         except: pass
-
-    # --- DATA READING ---
-    def read_axis(self, hex_addr, size, endian, axis_format):
-        try:
-            addr = int(str(hex_addr).strip(), 16)
-            if addr == 0 or addr >= 0xFFFF0000:
-                return np.arange(size)
-            bytes_per_value = 4 if axis_format == 'f' else 2
-            with open(self.bin_path, "rb") as f:
-                f.seek(addr)
-                raw = f.read(size * bytes_per_value)
-            return np.array(struct.unpack(f"{endian}{size}{axis_format}", raw))
-        except:
-            return np.arange(size)
-
-    def read_map_3d(self):
-        row = self.df.iloc[self.current_index]
-        size_x = int(row['Size_X'])
-        size_y = int(row['Size_Y'])
-        map_z_hex = str(row['Map_Z_Addr']).strip()
-        endian = self.z_format_3d[0]
-        fmt_char = self.z_format_3d[-1]
-        
-        if fmt_char == 'f': bytes_per_value = 4
-        elif fmt_char.lower() == 'h': bytes_per_value = 2
-        else: bytes_per_value = 1
-        
-        with open(self.bin_path, "rb") as f:
-            f.seek(int(map_z_hex, 16))
-            raw_z_data = f.read(size_y * size_x * bytes_per_value)
-            
-        z_values = struct.unpack(f"{endian}{size_y * size_x}{fmt_char}", raw_z_data)
-        matrix_z = np.array(z_values).reshape((size_y, size_x))
-        axis_x = self.read_axis(str(row['Axis_X_Addr']).strip(), size_x, endian, self.ax_format)
-        axis_y = self.read_axis(str(row['Axis_Y_Addr']).strip(), size_y, endian, self.ax_format)
-        return matrix_z, axis_x, axis_y, size_y, size_x, map_z_hex
-
-    def read_map_2d(self):
-        row = self.df.iloc[self.current_index]
-        size_x = int(row['Size_X'])
-        curve_data_hex = str(row['Curve_Data_Addr']).strip()
-        
-        endian = self.z_format_2d[0]
-        fmt_char = self.z_format_2d[-1]
-        
-        if fmt_char == 'f': bytes_per_value = 4
-        elif fmt_char.lower() == 'h': bytes_per_value = 2
-        else: bytes_per_value = 1
-        
-        with open(self.bin_path, "rb") as f:
-            f.seek(int(curve_data_hex, 16))
-            raw_z = f.read(size_x * bytes_per_value)
-            
-        z_values = struct.unpack(f"{endian}{size_x}{fmt_char}", raw_z)
-        curve_z = np.array(z_values)
-        axis_x = self.read_axis(str(row['Axis_X_Addr']).strip(), size_x, endian, self.ax_format)
-        
-        axis_y_dummy = np.array([1])
-        size_y_dummy = 1
-        
-        return curve_z, axis_x, axis_y_dummy, size_y_dummy, size_x, curve_data_hex
-
-    def val_to_hex(self, val):
-        """Convert a value to its Hexadecimal representation"""
-        fmt_char = self.z_format_3d[-1] if self.map_mode == '3d' else self.z_format_2d[-1]
-        try:
-            if fmt_char == 'f':
-                packed = struct.pack('>f', float(val))
-                i = struct.unpack('>I', packed)[0]
-                return f"{i:08X}"
-            elif fmt_char.lower() == 'h':
-                return f"{int(round(float(val))) & 0xFFFF:04X}"
-            else:
-                return f"{int(round(float(val))) & 0xFF:02X}"
-        except: return "ERR"
-
-    # --- RENDERING ---
-    def build_color_map(self):
-        if not os.path.exists(self.bin_path): return
-        try:
-            with open(self.bin_path, "rb") as f:
-                self.bin_data = f.read()
-        except: return
-        
-        self.map_array = [-1] * len(self.bin_data)
-        self.map_dicts = {}
-        
-        def get_bperval(fmt):
-            f = fmt[-1].lower()
-            if f == 'f': return 4
-            elif f == 'h': return 2
-            return 1
-            
-        map_id = 0
-            
-        if self.highlight_3d and os.path.exists(self.csv_3d_path):
-            try:
-                df3 = pd.read_csv(self.csv_3d_path, dtype=str)
-                bpv = get_bperval(self.z_format_3d)
-                for _, row in df3.iterrows():
-                    addr_str = str(row.get('Map_Z_Addr', '0')).strip()
-                    addr = int(addr_str, 16)
-                    sx = int(row.get('Size_X', 1))
-                    sy = int(row.get('Size_Y', 1))
-                    length = sx * sy * bpv
-                    if addr + length <= len(self.map_array):
-                        for i in range(addr, addr + length):
-                            self.map_array[i] = map_id
-                        self.map_dicts[map_id] = {
-                            'color': QColor(0, 191, 255), # DeepSkyBlue
-                            'tag': f"3D {addr_str} {sx}x{sy}",
-                            'addr': addr
-                        }
-                    map_id += 1
-            except: pass
-            
-        if self.highlight_2d and os.path.exists(self.csv_2d_path):
-            try:
-                df2 = pd.read_csv(self.csv_2d_path, dtype=str)
-                bpv = get_bperval(self.z_format_2d)
-                for _, row in df2.iterrows():
-                    addr_str = str(row.get('Curve_Data_Addr', '0')).strip()
-                    addr = int(addr_str, 16)
-                    sx = int(row.get('Size_X', 1))
-                    length = sx * bpv
-                    if addr + length <= len(self.map_array):
-                        for i in range(addr, addr + length):
-                            self.map_array[i] = map_id
-                        self.map_dicts[map_id] = {
-                            'color': QColor(50, 205, 50), # LimeGreen
-                            'tag': f"2D {addr_str} {sx}x1",
-                            'addr': addr
-                        }
-                    map_id += 1
-            except: pass
 
     def on_hex_selection_changed(self, current, previous):
         if not current.isValid(): return
@@ -1323,8 +886,8 @@ class DensoViewerApp(QMainWindow):
         for r in range(size_y):
             for c in range(size_x):
                 addr = (start_row + r) * 16 + (start_col + c) * bpc
-                if addr + bpc <= len(self.bin_data):
-                    val_bytes = self.bin_data[addr:addr+bpc]
+                if addr + bpc <= len(self.data_manager.bin_data):
+                    val_bytes = self.data_manager.bin_data[addr:addr+bpc]
                     try:
                         v = struct.unpack(f"{endian}{fmt_char}", val_bytes)[0]
                         raw_matrix[r, c] = v
@@ -1391,27 +954,38 @@ class DensoViewerApp(QMainWindow):
         self.canvas.draw_idle()
 
     def update_hex_view(self):
-        self.build_color_map()
-        
-        fmt = self.z_format_3d if self.map_mode == '3d' else self.z_format_2d
+        self.data_manager.build_color_map(self.highlight_3d, self.highlight_2d)
+                
+        # Convert QColor from tuples
+        map_dicts_qcolor = {}
+        for k, v in self.data_manager.map_dicts_tuples.items():
+            r, g, b = v['color']
+            map_dicts_qcolor[k] = {
+                'color': QColor(r, g, b),
+                'tag': v['tag'],
+                'addr': v['addr']
+            }
+        self.data_manager.map_dicts = map_dicts_qcolor
+                
+        fmt = self.data_manager.z_format_3d if self.map_mode == '3d' else self.data_manager.z_format_2d
         
         if not hasattr(self, 'hex_table_model'):
-            self.hex_table_model = HexTableModel(self.bin_data, self.map_array, self.map_dicts, fmt, self.sparkline_style)
+            self.hex_table_model = HexTableModel(self.data_manager.bin_data, self.data_manager.map_array, self.data_manager.map_dicts, fmt, self.sparkline_style)
             self.hex_table.setModel(self.hex_table_model)
             self.hex_table.setFont(QFont("Courier New", 10))
             self.hex_table.selectionModel().currentChanged.connect(self.on_hex_selection_changed)
             self.hex_table.selectionModel().selectionChanged.connect(self.update_hex_plot)
         else:
-            self.hex_table_model.update_settings(self.bin_data, self.map_array, self.map_dicts, fmt, self.sparkline_style)
+            self.hex_table_model.update_settings(self.data_manager.bin_data, self.data_manager.map_array, self.data_manager.map_dicts, fmt, self.sparkline_style)
             
         bpc = self.hex_table_model.bytes_per_col
         for i in range(self.hex_table_model.data_cols):
             self.hex_table.setColumnWidth(i, 35 if bpc == 1 else (55 if bpc == 2 else 95))
         self.hex_table.setColumnWidth(self.hex_table_model.data_cols, 150)
             
-        if not self.df.empty:
+        if not self.data_manager.df.empty:
             addr_col = 'Map_Z_Addr' if self.map_mode == '3d' else 'Curve_Data_Addr'
-            curr_addr_hex = str(self.df.iloc[self.current_index].get(addr_col, '0')).strip()
+            curr_addr_hex = str(self.data_manager.df.iloc[self.data_manager.current_index].get(addr_col, '0')).strip()
             try:
                 addr_int = int(curr_addr_hex, 16)
                 idx = self.hex_table_model.index(addr_int // 16, (addr_int % 16) // bpc)
@@ -1420,18 +994,18 @@ class DensoViewerApp(QMainWindow):
             except: pass
 
     def draw_map(self):
-        if self.df.empty: return
+        if self.data_manager.df.empty: return
         try:
             if self.map_mode == '3d':
-                raw_matrix, axis_x, axis_y, size_y, size_x, map_addr = self.read_map_3d()
+                raw_matrix, axis_x, axis_y, size_y, size_x, map_addr = self.data_manager.read_map_3d()
                 current_factor = self.factor_z_3d
                 current_offset = self.offset_z_3d
-                current_fmt = self.z_format_3d
+                current_fmt = self.data_manager.z_format_3d
             else:
-                raw_matrix, axis_x, _, size_y, size_x, map_addr = self.read_map_2d()
+                raw_matrix, axis_x, _, size_y, size_x, map_addr = self.data_manager.read_map_2d()
                 current_factor = self.factor_z_2d
                 current_offset = self.offset_z_2d
-                current_fmt = self.z_format_2d
+                current_fmt = self.data_manager.z_format_2d
                 
             matrix_z = (raw_matrix * current_factor) + current_offset
             
@@ -1447,8 +1021,8 @@ class DensoViewerApp(QMainWindow):
             self.z_min = matrix_z.min()
             self.z_max = matrix_z.max()
             
-            if self.current_map_addr != map_addr:
-                self.current_map_addr = map_addr
+            if self.data_manager.current_map_addr != map_addr:
+                self.data_manager.current_map_addr = map_addr
                 
                 self.abs_center_x = (size_x - 1) / 2.0
                 self.abs_center_y = (size_y - 1) / 2.0
@@ -1467,7 +1041,7 @@ class DensoViewerApp(QMainWindow):
                 self.center_y_2d = (self.abs_ylim[0] + self.abs_ylim[1]) / 2.0
                 self.cam_zoom_2d = 1.0
             
-            title = f"Map {self.current_index + 1}/{self.total_maps} | Addr: {map_addr} | Z: {current_fmt} | Factor: {current_factor}"
+            title = f"Map {self.data_manager.current_index + 1}/{self.data_manager.total_maps} | Addr: {map_addr} | Z: {current_fmt} | Factor: {current_factor}"
             self.lbl_title.setText(title)
 
             if self.btn_main_mode.text() == "Mode: Hex Dump":
@@ -1542,7 +1116,7 @@ class DensoViewerApp(QMainWindow):
                         for j in range(size_x):
                             if self.display_hex:
                                 v = matrix_z[i, j] if self.apply_factor_to_hex else raw_matrix[i, j]
-                                val_str = self.val_to_hex(v)
+                                val_str = self.data_manager.val_to_hex(v, current_fmt[-1], current_fmt[0])
                             else:
                                 val_str = f"{matrix_z[i, j]:.2f}"
                                 
@@ -1558,7 +1132,7 @@ class DensoViewerApp(QMainWindow):
                     for j in range(size_x):
                         if self.display_hex:
                             v = matrix_z[j] if self.apply_factor_to_hex else raw_matrix[j]
-                            val_str = self.val_to_hex(v)
+                            val_str = self.data_manager.val_to_hex(v, current_fmt[-1], current_fmt[0])
                         else:
                             val_str = f"{matrix_z[j]:.2f}"
                             
@@ -1584,8 +1158,4 @@ class DensoViewerApp(QMainWindow):
             else:
                 self.table.clear()
 
-if __name__ == "__main__":
-    app = QApplication(sys.argv)
-    viewer = DensoViewerApp()
-    viewer.showMaximized()
-    sys.exit(app.exec())
+
