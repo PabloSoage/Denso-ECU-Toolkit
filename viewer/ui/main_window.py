@@ -231,9 +231,19 @@ class DensoViewerApp(QMainWindow):
         
         # Tags and project management
         hbox_tags = QHBoxLayout()
-        btn_tag = QPushButton("Edit Tag")
+        
+        btn_tag = QPushButton("Map Tag")
         btn_tag.clicked.connect(self.edit_current_tag)
         hbox_tags.addWidget(btn_tag)
+        
+        btn_xtag = QPushButton("X Axis Tag")
+        btn_xtag.clicked.connect(lambda: self.edit_axis_tag('X'))
+        hbox_tags.addWidget(btn_xtag)
+        
+        btn_ytag = QPushButton("Y Axis Tag")
+        btn_ytag.clicked.connect(lambda: self.edit_axis_tag('Y'))
+        hbox_tags.addWidget(btn_ytag)
+        
         left_panel.addLayout(hbox_tags)
         
         hbox_proj = QHBoxLayout()
@@ -1307,12 +1317,30 @@ class DensoViewerApp(QMainWindow):
                 self.real_axis_y = axis_y
             
             self.real_axis_x = axis_x
-            
+
             self.map_size_x = size_x
             self.map_size_y = size_y
             self.z_min = matrix_z.min()
             self.z_max = matrix_z.max()
-            
+
+            # Axis Tags logic
+            axis_x_addr = str(row['Axis_X_Addr']).strip().upper()
+            x_tag = " ".join(self.data_manager.tags.get(axis_x_addr, {}).get("tags", [])) if axis_x_addr and axis_x_addr not in ('0', '0X0', '00000000') else ""
+            self.x_label_str = f"X Axis [{x_tag}]" if x_tag else "X Axis"
+
+            if self.map_mode == '3d':
+                axis_y_addr = str(row.get('Axis_Y_Addr', '')).strip().upper()
+                y_tag = " ".join(self.data_manager.tags.get(axis_y_addr, {}).get("tags", [])) if axis_y_addr and axis_y_addr not in ('0', '0X0', '00000000') else ""
+                self.y_label_str = f"Y Axis [{y_tag}]" if y_tag else "Y Axis"
+            else:
+                self.y_label_str = "Y Axis"
+
+            map_addr_col = 'Map_Z_Addr' if self.map_mode == '3d' else 'Curve_Data_Addr'
+            m_addr = str(row.get(map_addr_col, '0')).strip().upper()
+            m_tag = " ".join(self.data_manager.tags.get(m_addr, {}).get("tags", []))
+            self.z_label_3d_str = f"Z Data [{m_tag}]" if m_tag else "Z Data"
+            self.z_label_2d_str = f"Curve Data [{m_tag}]" if m_tag else "Curve Data"
+
             if self.data_manager.current_map_addr != map_addr:
                 self.data_manager.current_map_addr = map_addr
                 
@@ -1374,11 +1402,11 @@ class DensoViewerApp(QMainWindow):
                     self.ax.set_yticks(y_grid)
                     self.ax.set_yticklabels(clean_axis_y, fontsize=8)
                     
-                    self.ax.set_xlabel('\nX Axis', labelpad=12)
-                    self.ax.set_ylabel('\nY Axis', labelpad=12)
-                    self.ax.set_zlabel('Z Data', labelpad=12)
-                    
-                    self.ax.invert_yaxis() 
+                    self.ax.set_xlabel('\n' + self.x_label_str, labelpad=12)
+                    self.ax.set_ylabel('\n' + self.y_label_str, labelpad=12)
+                    self.ax.set_zlabel(self.z_label_3d_str, labelpad=12)
+
+                    self.ax.invert_yaxis()
                     try: self.ax.set_box_aspect((2.5, 2.0, 0.6))
                     except: pass
                     
@@ -1393,9 +1421,9 @@ class DensoViewerApp(QMainWindow):
                     self.ax.plot(axis_x, matrix_z, marker='o', color='b', linewidth=2, markersize=5)
                     self.cursor_marker, = self.ax.plot([], [], marker='o', color='red', markersize=8, zorder=10)
                     self.cursor_marker.set_visible(False)
-                    
-                    self.ax.set_xlabel('X Axis')
-                    self.ax.set_ylabel('Curve Data')
+
+                    self.ax.set_xlabel(self.x_label_str)
+                    self.ax.set_ylabel(self.z_label_2d_str)
                     self.ax.grid(True, linestyle='--', alpha=0.7)
                     self.apply_2d_zoom()
 
@@ -1544,6 +1572,29 @@ class DensoViewerApp(QMainWindow):
             self.update_tag_filter_menu()
             self.update_list()
             self.sync_listbox_selection()
+            self.update_hex_view()
+
+    def edit_axis_tag(self, axis):
+        if self.data_manager.df.empty: return
+        row = self.data_manager.df.iloc[self.data_manager.current_index]        
+        addr_col = f'Axis_{axis}_Addr'
+        if addr_col not in row or not str(row[addr_col]).strip():
+            return
+        
+        addr = str(row[addr_col]).strip().upper()
+        if addr == '0' or addr == '0X0' or addr == '00000000': 
+            return
+
+        tag_data = self.data_manager.tags.get(addr, {})
+        current_tags = tag_data.get("tags", [])
+
+        dlg = TagEditorDialog(current_tags, self)
+        dlg.setWindowTitle(f"Edit {axis} Axis Tags ({addr})")
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            self.data_manager.tags[addr] = {"tags": dlg.tags, "length": tag_data.get("length", 1)}
+            self.data_manager.build_color_map(highlight_3d=self.highlight_3d, highlight_2d=self.highlight_2d, highlight_custom=self.highlight_custom_tags)      
+            self.update_tag_filter_menu()
+            self.draw_map()
             self.update_hex_view()
 
     def save_project(self):
