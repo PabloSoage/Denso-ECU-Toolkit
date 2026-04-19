@@ -40,8 +40,7 @@ class DataManager:
             # Add Tags column
             tags_list = []
             for _, row in self.df.iterrows():
-                addr_col = 'Map_Z_Addr' if map_mode == '3d' else 'Curve_Data_Addr'
-                addr = str(row.get(addr_col, "")).strip().upper()
+                addr = str(row.get('Wrapper_Addr', "")).strip().upper()
                 tags_list.append(", ".join(self.tags.get(addr, {}).get("tags", [])))
             self.df['Tag'] = tags_list
             

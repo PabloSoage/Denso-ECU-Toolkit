@@ -231,18 +231,24 @@ class DensoViewerApp(QMainWindow):
         
         # Tags and project management
         hbox_tags = QHBoxLayout()
+
+        self.btn_edit_tags = QPushButton("Edit Tags ▼")
+        self.edit_tags_menu = QMenu(self)
         
-        btn_tag = QPushButton("Map Tag")
-        btn_tag.clicked.connect(self.edit_current_tag)
-        hbox_tags.addWidget(btn_tag)
+        action_wrapper = self.edit_tags_menu.addAction("Map Tag")
+        action_wrapper.triggered.connect(lambda: self.edit_specific_tag('wrapper'))
         
-        btn_xtag = QPushButton("X Axis Tag")
-        btn_xtag.clicked.connect(lambda: self.edit_axis_tag('X'))
-        hbox_tags.addWidget(btn_xtag)
+        action_map = self.edit_tags_menu.addAction("Z Data Tag")
+        action_map.triggered.connect(lambda: self.edit_specific_tag('z'))
         
-        btn_ytag = QPushButton("Y Axis Tag")
-        btn_ytag.clicked.connect(lambda: self.edit_axis_tag('Y'))
-        hbox_tags.addWidget(btn_ytag)
+        action_x = self.edit_tags_menu.addAction("X Axis Tag")
+        action_x.triggered.connect(lambda: self.edit_specific_tag('x'))
+        
+        action_y = self.edit_tags_menu.addAction("Y Axis Tag")
+        action_y.triggered.connect(lambda: self.edit_specific_tag('y'))
+        
+        self.btn_edit_tags.setMenu(self.edit_tags_menu)
+        hbox_tags.addWidget(self.btn_edit_tags)
         
         left_panel.addLayout(hbox_tags)
         
@@ -1555,45 +1561,50 @@ class DensoViewerApp(QMainWindow):
                     self.sync_listbox_selection()
                 self.update_hex_view()
 
-    def edit_current_tag(self):
+    def edit_specific_tag(self, target):
         if self.data_manager.df.empty: return
-        addr_col = 'Map_Z_Addr' if self.map_mode == '3d' else 'Curve_Data_Addr'
         row = self.data_manager.df.iloc[self.data_manager.current_index]        
-        addr = str(row.get(addr_col, '')).strip().upper()
         
-        tag_data = self.data_manager.tags.get(addr, {})
-        current_tags = tag_data.get("tags", [])
-
-        dlg = TagEditorDialog(current_tags, self)
-        if dlg.exec() == QDialog.DialogCode.Accepted:
-            self.data_manager.tags[addr] = {"tags": dlg.tags, "length": tag_data.get("length", 1)}
-            self.data_manager.df.loc[self.data_manager.current_index, 'Tag'] = ", ".join(dlg.tags)
-            self.data_manager.build_color_map(highlight_3d=self.highlight_3d, highlight_2d=self.highlight_2d, highlight_custom=self.highlight_custom_tags)
-            self.update_tag_filter_menu()
-            self.update_list()
-            self.sync_listbox_selection()
-            self.update_hex_view()
-
-    def edit_axis_tag(self, axis):
-        if self.data_manager.df.empty: return
-        row = self.data_manager.df.iloc[self.data_manager.current_index]        
-        addr_col = f'Axis_{axis}_Addr'
+        if target == 'wrapper':
+            addr_col = 'Wrapper_Addr'
+            title_prefix = "Map"
+        elif target == 'z':
+            addr_col = 'Map_Z_Addr' if self.map_mode == '3d' else 'Curve_Data_Addr'
+            title_prefix = "Z Data"
+        elif target == 'x':
+            addr_col = 'Axis_X_Addr'
+            title_prefix = "X Axis"
+        elif target == 'y':
+            addr_col = 'Axis_Y_Addr'
+            title_prefix = "Y Axis"
+            if self.map_mode != '3d': return
+            
         if addr_col not in row or not str(row[addr_col]).strip():
             return
-        
+
         addr = str(row[addr_col]).strip().upper()
-        if addr == '0' or addr == '0X0' or addr == '00000000': 
+        if not addr or addr in ('0', '0X0', '00000000'): 
             return
 
         tag_data = self.data_manager.tags.get(addr, {})
         current_tags = tag_data.get("tags", [])
 
         dlg = TagEditorDialog(current_tags, self)
-        dlg.setWindowTitle(f"Edit {axis} Axis Tags ({addr})")
+        dlg.setWindowTitle(f"Edit {title_prefix} Tags ({addr})")
         if dlg.exec() == QDialog.DialogCode.Accepted:
             self.data_manager.tags[addr] = {"tags": dlg.tags, "length": tag_data.get("length", 1)}
-            self.data_manager.build_color_map(highlight_3d=self.highlight_3d, highlight_2d=self.highlight_2d, highlight_custom=self.highlight_custom_tags)      
+            
+            if target == 'wrapper':
+                self.data_manager.df.loc[self.data_manager.current_index, 'Tag'] = ", ".join(dlg.tags)
+                
+            self.data_manager.build_color_map(highlight_3d=self.highlight_3d, highlight_2d=self.highlight_2d, highlight_custom=self.highlight_custom_tags)
             self.update_tag_filter_menu()
+            
+            if target == 'wrapper':
+                self.update_list()
+                if hasattr(self.data_manager, 'current_map_addr') and self.data_manager.current_map_addr == addr:
+                    self.sync_listbox_selection()
+            
             self.draw_map()
             self.update_hex_view()
 
