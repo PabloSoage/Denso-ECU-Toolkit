@@ -269,7 +269,7 @@ class DensoViewerApp(QMainWindow):
             self.plot_container.setVisible(True)
             self.bottom_stack.setVisible(False)
         else:
-            self.canvas.setVisible(False)
+            self.plot_container.setVisible(False)
             self.bottom_stack.setVisible(True)
             self.bottom_stack.setCurrentIndex(0)
             self.btn_hex.setVisible(True)
@@ -343,7 +343,7 @@ class DensoViewerApp(QMainWindow):
             
             # Reset splitter order for map viewer
             self.stacked_widget.setOrientation(Qt.Orientation.Vertical)
-            self.stacked_widget.insertWidget(0, self.canvas)
+            self.stacked_widget.insertWidget(0, self.plot_container)
             self.stacked_widget.insertWidget(1, self.bottom_stack)
             self.stacked_widget.setSizes([600, 400])
             
@@ -352,7 +352,7 @@ class DensoViewerApp(QMainWindow):
                 self.bottom_stack.setVisible(False)
                 self.btn_hex.setVisible(False)
             else:
-                self.canvas.setVisible(False)
+                self.plot_container.setVisible(False)
                 self.bottom_stack.setVisible(True)
                 self.bottom_stack.setCurrentIndex(0) # Table
                 self.btn_hex.setVisible(True)
@@ -397,13 +397,13 @@ class DensoViewerApp(QMainWindow):
         if self.btn_main_mode.text() == "Mode: Hex Dump":
             if self.hex_plot_position == 'top':
                 self.stacked_widget.setOrientation(Qt.Orientation.Vertical)
-                self.stacked_widget.insertWidget(0, self.canvas)
+                self.stacked_widget.insertWidget(0, self.plot_container)
                 self.stacked_widget.insertWidget(1, self.bottom_stack)
                 self.stacked_widget.setSizes([600, 400])
             else:
                 self.stacked_widget.setOrientation(Qt.Orientation.Horizontal)
                 self.stacked_widget.insertWidget(0, self.bottom_stack)
-                self.stacked_widget.insertWidget(1, self.canvas)
+                self.stacked_widget.insertWidget(1, self.plot_container)
                 self.stacked_widget.setSizes([400, 600])
 
     def toggle_view(self):
@@ -411,7 +411,7 @@ class DensoViewerApp(QMainWindow):
             self.view_mode = 'table'
             self.btn_toggle.setText("View: Table")
             if self.btn_main_mode.text() == "Mode: Map Viewer":
-                self.canvas.setVisible(False)
+                self.plot_container.setVisible(False)
                 self.bottom_stack.setVisible(True)
                 self.bottom_stack.setCurrentIndex(0)
                 self.btn_hex.setVisible(True)
@@ -1086,11 +1086,11 @@ class DensoViewerApp(QMainWindow):
                     if self.map_mode == '3d':
                         x_grid = np.arange(size_x)
                         y_grid = np.arange(size_y)
-                        self.pg_canvas.draw_3d(x_grid, y_grid, matrix_z)
+                        self.pg_canvas.draw_3d(x_grid, y_grid, matrix_z, clean_axis_x, clean_axis_y)
                     else:
                         self.pg_canvas.draw_2d(axis_x, matrix_z)
                     return
-                    
+                
                 self.ax.clear()
                 
                 if self.map_mode == '3d':
