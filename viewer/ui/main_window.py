@@ -14,7 +14,7 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QHBoxLayout, QV
                              QTabWidget, QFileDialog, QMessageBox, QCheckBox, QTableView,
                              QStyledItemDelegate, QInputDialog, QSplitter, QMenu)
 from PyQt6.QtCore import Qt, QEvent, QPointF, QRectF, QAbstractTableModel, QModelIndex, QVariant
-from PyQt6.QtGui import QPainter, QColor, QPolygonF, QBrush, QFont, QKeySequence, QShortcut
+from PyQt6.QtGui import QAction, QPainter, QColor, QPolygonF, QBrush, QFont, QKeySequence, QShortcut
 
 # ================= DEFAULT CONFIGURATION =================
 DEFAULT_CSV_3D = "3d_maps_review.csv"
@@ -34,7 +34,51 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import os
 import sys
+class TagEditorDialog(QDialog):
+    def __init__(self, current_tags, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Edit Tags")
+        self.tags = list(current_tags)
+        self.layout = QVBoxLayout(self)
+        
+        self.list_widget = QListWidget()
+        self.list_widget.addItems(self.tags)
+        self.layout.addWidget(self.list_widget)
+        
+        h_layout = QHBoxLayout()
+        self.new_tag_input = QLineEdit()
+        self.btn_add = QPushButton("Add Tag")
+        self.btn_remove = QPushButton("Remove Selected")
+        h_layout.addWidget(self.new_tag_input)
+        h_layout.addWidget(self.btn_add)
+        h_layout.addWidget(self.btn_remove)
+        self.layout.addLayout(h_layout)
+        
+        self.btn_add.clicked.connect(self.add_tag)
+        self.btn_remove.clicked.connect(self.remove_tag)
+        
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        self.layout.addWidget(buttons)
+        
+    def add_tag(self):
+        t = self.new_tag_input.text().strip()
+        if t and t not in self.tags:
+            self.tags.append(t)
+            self.list_widget.addItem(t)
+            self.new_tag_input.clear()
+            
+    def remove_tag(self):
+        for item in self.list_widget.selectedItems():
+            self.tags.remove(item.text())
+            self.list_widget.takeItem(self.list_widget.row(item))
+
 class DensoViewerApp(QMainWindow):
+    def closeEvent(self, event):
+        plt.close('all')
+        super().closeEvent(event)
+
     def __init__(self):
         super().__init__()
         self.data_manager = DataManager()
@@ -61,6 +105,8 @@ class DensoViewerApp(QMainWindow):
         self.sparkline_style = 'Bars'    
         self.highlight_3d = True
         self.highlight_2d = True
+        self.highlight_custom_tags = True
+        self.active_tag_filters = set()
         self.hex_plot_visible = True
         self.hex_plot_mode = '3d'
         self.hex_plot_position = 'top'
@@ -135,6 +181,7 @@ class DensoViewerApp(QMainWindow):
                 QMessageBox.critical(self, "Error", msg)
             return
             
+        self.update_tag_filter_menu()
         self.update_list()
         self.rebuild_plot_axes()
         self.draw_map()
@@ -164,11 +211,19 @@ class DensoViewerApp(QMainWindow):
         
         # --- LEFT PANEL ---
         left_panel = QVBoxLayout()
-        left_panel.addWidget(QLabel("<b>Search Map Address:</b>"))
-        
+        left_panel.addWidget(QLabel("<b>Search Map Address/Tag:</b>"))
+
+        search_layout = QHBoxLayout()
         self.search_box = QLineEdit()
         self.search_box.textChanged.connect(self.update_list)
-        left_panel.addWidget(self.search_box)
+        
+        self.btn_tag_filter = QPushButton("Tags Filter")
+        self.tag_filter_menu = QMenu(self)
+        self.btn_tag_filter.setMenu(self.tag_filter_menu)
+        
+        search_layout.addWidget(self.search_box)
+        search_layout.addWidget(self.btn_tag_filter)
+        left_panel.addLayout(search_layout)
         
         self.map_listbox = QListWidget()
         self.map_listbox.itemSelectionChanged.connect(self.on_list_select)
@@ -305,6 +360,27 @@ class DensoViewerApp(QMainWindow):
         main_layout.addLayout(right_panel, 4) 
 
     # --- UI LOGIC ---
+    def update_tag_filter_menu(self):
+        if not hasattr(self, 'tag_filter_menu'): return
+        self.tag_filter_menu.clear()
+        all_tags = set()
+        for t_data in self.data_manager.tags.values():
+            for t in t_data.get("tags", []):
+                all_tags.add(t)
+                
+        for t in sorted(all_tags):
+            action = self.tag_filter_menu.addAction(t)
+            action.setCheckable(True)
+            action.setChecked(t in self.active_tag_filters)
+            action.triggered.connect(lambda checked, tag=t: self.on_tag_filter_toggled(tag, checked))
+
+    def on_tag_filter_toggled(self, tag, checked):
+        if checked:
+            self.active_tag_filters.add(tag)
+        else:
+            self.active_tag_filters.discard(tag)
+        self.update_list()
+
     def update_list(self):
         if self.data_manager.df.empty: return
         search_term = self.search_box.text().lower()
@@ -320,7 +396,17 @@ class DensoViewerApp(QMainWindow):
             if tag:
                 display_text += f" [{tag}]"
 
-            if search_term in addr.lower() or search_term in tag.lower():
+            term_match = (search_term in addr.lower() or search_term in tag.lower())
+            
+            tag_match = True
+            if self.active_tag_filters:
+                row_tags = [t.strip() for t in tag.split(',') if t.strip()]
+                for f_tag in self.active_tag_filters:
+                    if f_tag not in row_tags:
+                        tag_match = False
+                        break
+                        
+            if term_match and tag_match:
                 self.map_listbox.addItem(display_text)
                 self.filtered_indices.append(idx)
 
@@ -604,6 +690,14 @@ class DensoViewerApp(QMainWindow):
         self.cb_hl_2d.setChecked(self.highlight_2d)
         ly_tbl.addWidget(self.cb_hl_2d)
         
+        self.cb_hl_custom = QCheckBox("Highlight Custom Tags in Hex Mode (Orange)")
+        self.cb_hl_custom.setChecked(self.highlight_custom_tags)
+        ly_tbl.addWidget(self.cb_hl_custom)
+        
+        self.cb_hl_custom = QCheckBox("Highlight Custom Tags in Hex Mode (Orange)")
+        self.cb_hl_custom.setChecked(self.highlight_custom_tags)
+        ly_tbl.addWidget(self.cb_hl_custom)
+        
         ly_spark = QHBoxLayout()
         ly_spark.addWidget(QLabel("Sparkline Style:"))
         rb_sp1 = QRadioButton("Bars (WinOLS)")
@@ -684,6 +778,8 @@ class DensoViewerApp(QMainWindow):
             self.apply_factor_to_hex = self.cb_hex_f.isChecked()
             self.highlight_3d = self.cb_hl_3d.isChecked()
             self.highlight_2d = self.cb_hl_2d.isChecked()
+            self.highlight_custom_tags = self.cb_hl_custom.isChecked()
+            self.highlight_custom_tags = self.cb_hl_custom.isChecked()
             self.sparkline_style = 'Bars' if rb_sp1.isChecked() else 'Line'
             
             new_pos = 'top' if rb_pos_top.isChecked() else 'right'
@@ -1230,47 +1326,69 @@ class DensoViewerApp(QMainWindow):
         if self.btn_main_mode.text() != "Mode: Hex Dump": return
         idx = self.hex_table.indexAt(pos)
         if not idx.isValid(): return
-        
+
         bpc = self.hex_table_model.bytes_per_col
         if idx.column() == self.hex_table_model.data_cols: return
         addr = idx.row() * 16 + idx.column() * bpc
-        
+
         menu = QMenu(self)
-        action_tag = menu.addAction(f"Tag Map from {addr:08X}...")
-        
+        action_tag = menu.addAction("Tag Selection/Map...")
+
         action = menu.exec(self.hex_table.viewport().mapToGlobal(pos))
         if action == action_tag:
-            addr_hex = f"{addr:08X}"
-            current_tag = self.data_manager.tags.get(addr_hex, "")
-            new_tag, ok = QInputDialog.getText(self, "Add/Edit Tag", f"Set tag for {addr_hex}:", QLineEdit.EchoMode.Normal, current_tag)
-            if ok:
-                self.data_manager.tags[addr_hex] = new_tag
+            ranges = self.hex_table.selectedRanges()
+            length = bpc
+            start_addr = addr
+            if ranges:
+                r = ranges[0]
+                min_row, max_row = r.topRow(), r.bottomRow()
+                min_col, max_col = r.leftColumn(), r.rightColumn()
+                min_col = max(0, min(self.hex_table_model.data_cols - 1, min_col))
+                max_col = max(0, min(self.hex_table_model.data_cols - 1, max_col))
                 
+                sel_start = min_row * 16 + min_col * bpc
+                sel_end = max_row * 16 + max_col * bpc + bpc
+                if addr >= sel_start and addr < sel_end:
+                    start_addr = sel_start
+                    length = sel_end - sel_start
+
+            addr_hex = f"{start_addr:08X}"
+            tag_data = self.data_manager.tags.get(addr_hex, {})
+            current_tags = tag_data.get("tags", [])
+            
+            dlg = TagEditorDialog(current_tags, self)
+            if dlg.exec() == QDialog.DialogCode.Accepted:
+                self.data_manager.tags[addr_hex] = {"tags": dlg.tags, "length": length}
+
                 addr_col = 'Map_Z_Addr' if self.map_mode == '3d' else 'Curve_Data_Addr'
                 if not self.data_manager.df.empty:
                     df = self.data_manager.df
                     match_idx = df.index[df[addr_col].str.strip().str.upper() == addr_hex]
                     if not match_idx.empty:
-                        df.loc[match_idx, 'Tag'] = new_tag
-                
-                self.data_manager.build_color_map(highlight_3d=self.highlight_3d, highlight_2d=self.highlight_2d)
+                        df.loc[match_idx, 'Tag'] = ", ".join(dlg.tags)
+
+                self.data_manager.build_color_map(highlight_3d=self.highlight_3d, highlight_2d=self.highlight_2d, highlight_custom=self.highlight_custom_tags)
+                self.update_tag_filter_menu()
                 self.update_list()
-                if self.data_manager.current_map_addr == addr_hex:
+                if hasattr(self.data_manager, 'current_map_addr') and self.data_manager.current_map_addr == addr_hex:
                     self.sync_listbox_selection()
                 self.update_hex_view()
 
     def edit_current_tag(self):
         if self.data_manager.df.empty: return
         addr_col = 'Map_Z_Addr' if self.map_mode == '3d' else 'Curve_Data_Addr'
-        row = self.data_manager.df.iloc[self.data_manager.current_index]
+        row = self.data_manager.df.iloc[self.data_manager.current_index]        
         addr = str(row.get(addr_col, '')).strip().upper()
-        current_tag = self.data_manager.tags.get(addr, "")
         
-        new_tag, ok = QInputDialog.getText(self, "Edit Tag", f"Set tag for {addr}:", QLineEdit.EchoMode.Normal, current_tag)
-        if ok:
-            self.data_manager.tags[addr] = new_tag
-            self.data_manager.df.loc[self.data_manager.current_index, 'Tag'] = new_tag
-            self.data_manager.build_color_map(highlight_3d=self.highlight_3d, highlight_2d=self.highlight_2d)
+        tag_data = self.data_manager.tags.get(addr, {})
+        current_tags = tag_data.get("tags", [])
+
+        dlg = TagEditorDialog(current_tags, self)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            self.data_manager.tags[addr] = {"tags": dlg.tags, "length": tag_data.get("length", 1)}
+            self.data_manager.df.loc[self.data_manager.current_index, 'Tag'] = ", ".join(dlg.tags)
+            self.data_manager.build_color_map(highlight_3d=self.highlight_3d, highlight_2d=self.highlight_2d, highlight_custom=self.highlight_custom_tags)
+            self.update_tag_filter_menu()
             self.update_list()
             self.sync_listbox_selection()
             self.update_hex_view()
