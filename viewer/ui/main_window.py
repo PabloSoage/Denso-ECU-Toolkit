@@ -26,6 +26,7 @@ from widgets.sparkline_widget import SparklineWidget
 from widgets.hex_map_delegate import HexMapDelegate
 from widgets.hex_table_model import HexTableModel
 from widgets.custom_canvas import CustomCanvas
+from widgets.pyqtgraph_canvas import PyQtGraphCanvas
 from core.data_manager import DataManager
 import struct
 import numpy as np
@@ -52,6 +53,7 @@ class DensoViewerApp(QMainWindow):
         self.data_manager.total_maps = 0
         self.data_manager.current_map_addr = ""
         
+        self.render_engine = 'matplotlib'
         self.map_mode = '3d'
         self.view_mode = 'plot' 
         self.display_hex = False 
@@ -234,7 +236,17 @@ class DensoViewerApp(QMainWindow):
         self.canvas.mpl_connect('button_release_event', self.on_mouse_release)
         self.canvas.mpl_connect('motion_notify_event', self.on_mouse_move)
         
-        self.stacked_widget.addWidget(self.canvas)
+        
+        self.pg_canvas = PyQtGraphCanvas(self)
+        self.pg_canvas.setVisible(False)
+        
+        self.plot_container = QWidget()
+        self.plot_container_layout = QVBoxLayout(self.plot_container)
+        self.plot_container_layout.setContentsMargins(0,0,0,0)
+        self.plot_container_layout.addWidget(self.canvas)
+        self.plot_container_layout.addWidget(self.pg_canvas)
+
+        self.stacked_widget.addWidget(self.plot_container)
         
         self.bottom_stack = QStackedWidget()
         
@@ -254,7 +266,7 @@ class DensoViewerApp(QMainWindow):
         self.stacked_widget.setSizes([600, 400])
         
         if self.view_mode == 'plot':
-            self.canvas.setVisible(True)
+            self.plot_container.setVisible(True)
             self.bottom_stack.setVisible(False)
         else:
             self.canvas.setVisible(False)
@@ -336,7 +348,7 @@ class DensoViewerApp(QMainWindow):
             self.stacked_widget.setSizes([600, 400])
             
             if self.view_mode == 'plot':
-                self.canvas.setVisible(True)
+                self.plot_container.setVisible(True)
                 self.bottom_stack.setVisible(False)
                 self.btn_hex.setVisible(False)
             else:
@@ -351,7 +363,7 @@ class DensoViewerApp(QMainWindow):
             self.btn_hex_plot_mode.setVisible(self.hex_plot_visible)
             
             # Hex Dump mode
-            self.canvas.setVisible(self.hex_plot_visible)
+            self.plot_container.setVisible(self.hex_plot_visible)
             self.bottom_stack.setVisible(True)
             self.bottom_stack.setCurrentIndex(1) # Hex Table
             self.apply_splitter_position()
@@ -364,7 +376,7 @@ class DensoViewerApp(QMainWindow):
         self.btn_hex_plot_mode.setVisible(self.hex_plot_visible)
         
         if self.btn_main_mode.text() == "Mode: Hex Dump":
-            self.canvas.setVisible(self.hex_plot_visible)
+            self.plot_container.setVisible(self.hex_plot_visible)
             if self.hex_plot_visible:
                 self.apply_splitter_position()
                 self.update_hex_plot()
@@ -407,7 +419,7 @@ class DensoViewerApp(QMainWindow):
             self.view_mode = 'plot'
             self.btn_toggle.setText("View: Plot")
             if self.btn_main_mode.text() == "Mode: Map Viewer":
-                self.canvas.setVisible(True)
+                self.plot_container.setVisible(True)
                 self.bottom_stack.setVisible(False)
                 self.btn_hex.setVisible(False)
         self.draw_map()
@@ -432,6 +444,18 @@ class DensoViewerApp(QMainWindow):
         
         gb_mode = QGroupBox("Visualization Mode")
         ly_mode = QHBoxLayout()
+                
+        gb_engine = QGroupBox("Render Engine")
+        ly_engine = QHBoxLayout()
+        self.rb_mpl = QRadioButton("Matplotlib (Slow, Hover)")
+        self.rb_pg = QRadioButton("PyQtGraph (Fast, No Hover)")
+        if self.render_engine == 'matplotlib': self.rb_mpl.setChecked(True)
+        else: self.rb_pg.setChecked(True)
+        ly_engine.addWidget(self.rb_mpl)
+        ly_engine.addWidget(self.rb_pg)
+        gb_engine.setLayout(ly_engine)
+        vbox_f.addWidget(gb_engine)
+        
         rb_m1 = QRadioButton("3D Maps")
         rb_m2 = QRadioButton("2D Curves")
         if self.map_mode == '3d': rb_m1.setChecked(True)
@@ -598,6 +622,12 @@ class DensoViewerApp(QMainWindow):
         layout.addWidget(btns)
         
         if dialog.exec():
+            # Update engine
+            new_engine = 'matplotlib' if self.rb_mpl.isChecked() else 'pyqtgraph'
+            engine_changed = (new_engine != self.render_engine)
+            if engine_changed:
+                self.render_engine = new_engine
+
             self.data_manager.bin_path = le_bin.text(); self.data_manager.csv_3d_path = le_3d.text(); self.data_manager.csv_2d_path = le_2d.text()
             new_mode = '3d' if rb_m1.isChecked() else '2d'
             if new_mode != self.map_mode:
@@ -1048,6 +1078,19 @@ class DensoViewerApp(QMainWindow):
                 self.update_hex_view()
                 self.update_hex_plot()
             elif self.view_mode == 'plot':
+                is_pg = (self.render_engine == 'pyqtgraph')
+                self.canvas.setVisible(not is_pg)
+                self.pg_canvas.setVisible(is_pg)
+                
+                if is_pg:
+                    if self.map_mode == '3d':
+                        x_grid = np.arange(size_x)
+                        y_grid = np.arange(size_y)
+                        self.pg_canvas.draw_3d(x_grid, y_grid, matrix_z)
+                    else:
+                        self.pg_canvas.draw_2d(axis_x, matrix_z)
+                    return
+                    
                 self.ax.clear()
                 
                 if self.map_mode == '3d':
