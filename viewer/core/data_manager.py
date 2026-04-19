@@ -26,6 +26,7 @@ class DataManager:
         self.current_index = 0
         self.total_maps = 0
         self.current_map_addr = ""
+        self.custom_map_settings = {}
 
     def load_csv(self, map_mode):
         target_csv = self.csv_3d_path if map_mode == '3d' else self.csv_2d_path
@@ -57,7 +58,12 @@ class DataManager:
             addr = int(str(hex_addr).strip(), 16)
             if addr == 0 or addr >= 0xFFFF0000:
                 return np.arange(size)
-            bytes_per_value = 4 if axis_format == 'f' else 2
+            
+            f_char = axis_format[-1].lower()
+            if f_char == 'f': bytes_per_value = 4
+            elif f_char == 'h': bytes_per_value = 2
+            elif f_char in ('i', 'l'): bytes_per_value = 4
+            else: bytes_per_value = 1
             
             with open(self.bin_path, "rb") as f:
                 f.seek(addr)
@@ -71,11 +77,18 @@ class DataManager:
         size_x = int(row['Size_X'])
         size_y = int(row['Size_Y'])
         map_z_hex = str(row['Map_Z_Addr']).strip()
-        endian = self.z_format_3d[0]
-        fmt_char = self.z_format_3d[-1]
+        wrapper_addr_hex = str(row['Wrapper_Addr']).strip()
+        
+        custom = self.custom_map_settings.get(wrapper_addr_hex, {})
+        z_format = custom.get('z_format', self.z_format_3d)
+        ax_fmt = custom.get('ax_format', self.ax_format)
+        
+        endian = z_format[0]
+        fmt_char = z_format[-1]
 
         if fmt_char == 'f': bytes_per_value = 4
         elif fmt_char.lower() == 'h': bytes_per_value = 2
+        elif fmt_char.lower() in ('i', 'l'): bytes_per_value = 4
         else: bytes_per_value = 1
 
         with open(self.bin_path, "rb") as f:
@@ -84,20 +97,26 @@ class DataManager:
 
         z_values = struct.unpack(f"{endian}{size_y * size_x}{fmt_char}", raw_z_data)
         matrix_z = np.array(z_values).reshape((size_y, size_x))
-        axis_x = self.read_axis(str(row['Axis_X_Addr']).strip(), size_x, endian, self.ax_format)
-        axis_y = self.read_axis(str(row['Axis_Y_Addr']).strip(), size_y, endian, self.ax_format)
+        axis_x = self.read_axis(str(row['Axis_X_Addr']).strip(), size_x, endian, ax_fmt)
+        axis_y = self.read_axis(str(row['Axis_Y_Addr']).strip(), size_y, endian, ax_fmt)
         return matrix_z, axis_x, axis_y, size_y, size_x, map_z_hex
 
     def read_map_2d(self):
         row = self.df.iloc[self.current_index]
         size_x = int(row['Size_X'])
         curve_data_hex = str(row['Curve_Data_Addr']).strip()
+        wrapper_addr_hex = str(row['Wrapper_Addr']).strip()
 
-        endian = self.z_format_2d[0]
-        fmt_char = self.z_format_2d[-1]
+        custom = self.custom_map_settings.get(wrapper_addr_hex, {})
+        z_format = custom.get('z_format', self.z_format_2d)
+        ax_fmt = custom.get('ax_format', self.ax_format)
+
+        endian = z_format[0]
+        fmt_char = z_format[-1]
 
         if fmt_char == 'f': bytes_per_value = 4
         elif fmt_char.lower() == 'h': bytes_per_value = 2
+        elif fmt_char.lower() in ('i', 'l'): bytes_per_value = 4
         else: bytes_per_value = 1
 
         with open(self.bin_path, "rb") as f:
@@ -106,7 +125,7 @@ class DataManager:
 
         z_values = struct.unpack(f"{endian}{size_x}{fmt_char}", raw_z)
         curve_z = np.array(z_values)
-        axis_x = self.read_axis(str(row['Axis_X_Addr']).strip(), size_x, endian, self.ax_format)
+        axis_x = self.read_axis(str(row['Axis_X_Addr']).strip(), size_x, endian, ax_fmt)
 
         axis_y_dummy = np.array([1])
         size_y_dummy = 1
@@ -119,9 +138,11 @@ class DataManager:
             if fmt_char == 'f':
                 return struct.pack(f"{endian}f", v_float).hex().upper()
             elif fmt_char.lower() == 'h':
-                return struct.pack(f"{endian}H", int(v_float)).hex().upper()    
+                return struct.pack(f"{endian}{fmt_char}", int(v_float)).hex().upper()
+            elif fmt_char.lower() in ('i', 'l'):
+                return struct.pack(f"{endian}{fmt_char}", int(v_float)).hex().upper()
             else:
-                return struct.pack(f"{endian}B", int(v_float)).hex().upper()    
+                return struct.pack(f"{endian}{fmt_char}", int(v_float)).hex().upper()
         except:
             return "??"
 
@@ -133,7 +154,8 @@ class DataManager:
             "tags": self.tags,
             "z_format_3d": self.z_format_3d,
             "z_format_2d": self.z_format_2d,
-            "ax_format": self.ax_format
+            "ax_format": self.ax_format,
+            "custom_map_settings": self.custom_map_settings
         }
         try:
             with open(file_path, 'w') as f:
@@ -164,6 +186,7 @@ class DataManager:
             self.z_format_3d = data.get("z_format_3d", ">H")
             self.z_format_2d = data.get("z_format_2d", ">f")
             self.ax_format = data.get("ax_format", "f")
+            self.custom_map_settings = data.get("custom_map_settings", {})
             
             self.project_path = file_path
             return True, ""

@@ -11,7 +11,7 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QHBoxLayout, QV
                              QListWidget, QLineEdit, QPushButton, QLabel, QStackedWidget,
                              QTableWidget, QTableWidgetItem, QGroupBox, QRadioButton,
                              QFormLayout, QDialog, QDialogButtonBox, QDoubleSpinBox,
-                             QTabWidget, QFileDialog, QMessageBox, QCheckBox, QTableView, QComboBox,
+                             QTabWidget, QFileDialog, QMessageBox, QCheckBox, QTableView, QComboBox, QComboBox,
                              QStyledItemDelegate, QInputDialog, QSplitter, QMenu)
 from PyQt6.QtCore import Qt, QEvent, QPointF, QRectF, QAbstractTableModel, QModelIndex, QVariant
 from PyQt6.QtGui import QAction, QPainter, QColor, QPolygonF, QBrush, QFont, QKeySequence, QShortcut
@@ -287,7 +287,11 @@ class DensoViewerApp(QMainWindow):
         self.btn_toggle.clicked.connect(self.toggle_view)
         toolbar_layout.addWidget(self.btn_toggle)
         
-        btn_settings = QPushButton("⚙ Settings")
+        btn_map_settings = QPushButton("⚙ Map Settings")
+        btn_map_settings.clicked.connect(self.open_custom_map_settings)
+        toolbar_layout.addWidget(btn_map_settings)
+
+        btn_settings = QPushButton("⚙ Global Settings")
         btn_settings.clicked.connect(self.open_settings)
         toolbar_layout.addWidget(btn_settings)
         
@@ -539,6 +543,107 @@ class DensoViewerApp(QMainWindow):
         self.display_hex = not self.display_hex
         self.btn_hex.setStyleSheet("background-color: #ffcccc;" if self.display_hex else "")
         self.draw_map()
+
+    def open_custom_map_settings(self):
+        if self.data_manager.df.empty: return
+        
+        row = self.data_manager.df.iloc[self.data_manager.current_index]
+        wrapper_addr_hex = str(row['Wrapper_Addr']).strip()
+        custom = getattr(self.data_manager, "custom_map_settings", {}).get(wrapper_addr_hex, {})
+        
+        dialog = QDialog(self)
+        dialog.setWindowTitle(f"Custom Settings for Map: {wrapper_addr_hex}")
+        layout = QVBoxLayout(dialog)
+        
+        def parse_fmt(f_str):
+            if not f_str: return "16-bit", ">", False
+            endian = "<" if "<" in f_str else ">"
+            c = f_str[-1].lower()
+            if c == 'f': size = "Float"
+            elif c == 'b': size = "8-bit"
+            elif c == 'i' or c == 'l': size = "32-bit"
+            else: size = "16-bit" # default H/h
+            signed = f_str[-1].islower()
+            if size == "Float": signed = True
+            return size, endian, signed
+            
+        def build_fmt(size_str, signed, is_little):
+            endian = '<' if is_little else '>'
+            if size_str == 'Float': char = 'f'
+            elif size_str == '8-bit': char = 'b' if signed else 'B'
+            elif size_str == '16-bit': char = 'h' if signed else 'H'
+            else: char = 'i' if signed else 'I'
+            return endian + char
+
+        layout.addWidget(QLabel("<i>Leave empty or uncheck to use global settings.</i>"))
+
+        cb_override = QCheckBox("Enable Custom Settings for this Map")
+        cb_override.setChecked(wrapper_addr_hex in getattr(self.data_manager, "custom_map_settings", {}))
+        layout.addWidget(cb_override)
+        
+        frame = QGroupBox("Custom Settings")
+        ly_frame = QFormLayout(frame)
+        
+        glob_z = self.data_manager.z_format_3d if self.map_mode == '3d' else self.data_manager.z_format_2d
+        glob_ax = self.data_manager.ax_format
+        glob_f = self.factor_z_3d if self.map_mode == '3d' else self.factor_z_2d
+        glob_o = self.offset_z_3d if self.map_mode == '3d' else self.offset_z_2d
+
+        z_fmt = custom.get('z_format', glob_z)
+        ax_fmt = custom.get('ax_format', glob_ax)
+        c_factor = custom.get('factor', glob_f)
+        c_offset = custom.get('offset', glob_o)
+        
+        sizeZ, endZ, signZ = parse_fmt(z_fmt)
+        sizeA, endA, signA = parse_fmt('>' + ax_fmt if len(ax_fmt) == 1 else ax_fmt)
+        
+        cmb_z_size = QComboBox(); cmb_z_size.addItems(["8-bit", "16-bit", "32-bit", "Float"]); cmb_z_size.setCurrentText(sizeZ)
+        cmb_a_size = QComboBox(); cmb_a_size.addItems(["8-bit", "16-bit", "32-bit", "Float"]); cmb_a_size.setCurrentText(sizeA)
+        cb_endian = QCheckBox("Little Endian (LoHi)"); cb_endian.setChecked(endZ == '<')
+        cb_signed = QCheckBox("Signed - Uncheck for Unsigned"); cb_signed.setChecked(signZ)
+        
+        spin_f = QDoubleSpinBox(); spin_f.setDecimals(5); spin_f.setSingleStep(0.001)
+        spin_f.setRange(-10000, 10000); spin_f.setValue(c_factor)
+        
+        spin_o = QDoubleSpinBox(); spin_o.setDecimals(5); spin_o.setSingleStep(0.001)
+        spin_o.setRange(-10000, 10000); spin_o.setValue(c_offset)
+        
+        ly_frame.addRow("Z / Curve Data Size:", cmb_z_size)
+        ly_frame.addRow("Axis Data Size:", cmb_a_size)
+        ly_frame.addWidget(cb_endian)
+        ly_frame.addWidget(cb_signed)
+        ly_frame.addRow("Z / Curve Factor:", spin_f)
+        ly_frame.addRow("Z / Curve Offset:", spin_o)
+
+        layout.addWidget(frame)
+
+        def toggle_frame():
+            frame.setEnabled(cb_override.isChecked())
+        cb_override.toggled.connect(toggle_frame)
+        toggle_frame()
+        
+        btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        btns.accepted.connect(dialog.accept)
+        btns.rejected.connect(dialog.reject)
+        layout.addWidget(btns)
+        
+        if dialog.exec():
+            if cb_override.isChecked():
+                new_z = build_fmt(cmb_z_size.currentText(), cb_signed.isChecked(), cb_endian.isChecked())
+                new_a = build_fmt(cmb_a_size.currentText(), cb_signed.isChecked(), cb_endian.isChecked())
+                if not hasattr(self.data_manager, "custom_map_settings"):
+                    self.data_manager.custom_map_settings = {}
+                self.data_manager.custom_map_settings[wrapper_addr_hex] = {
+                    'z_format': new_z,
+                    'ax_format': new_a[-1],
+                    'factor': spin_f.value(),
+                    'offset': spin_o.value()
+                }
+            else:
+                if hasattr(self.data_manager, "custom_map_settings") and wrapper_addr_hex in self.data_manager.custom_map_settings:
+                    del self.data_manager.custom_map_settings[wrapper_addr_hex]
+            
+            self.draw_map()
 
     def open_settings(self):
         dialog = QDialog(self)
@@ -1179,16 +1284,20 @@ class DensoViewerApp(QMainWindow):
     def draw_map(self):
         if self.data_manager.df.empty: return
         try:
+            row = self.data_manager.df.iloc[self.data_manager.current_index]
+            wrapper_addr_hex = str(row['Wrapper_Addr']).strip()
+            custom = getattr(self.data_manager, "custom_map_settings", {}).get(wrapper_addr_hex, {})
+
             if self.map_mode == '3d':
                 raw_matrix, axis_x, axis_y, size_y, size_x, map_addr = self.data_manager.read_map_3d()
-                current_factor = self.factor_z_3d
-                current_offset = self.offset_z_3d
-                current_fmt = self.data_manager.z_format_3d
+                current_factor = custom.get('factor', self.factor_z_3d)
+                current_offset = custom.get('offset', self.offset_z_3d)
+                current_fmt = custom.get('z_format', self.data_manager.z_format_3d)
             else:
                 raw_matrix, axis_x, _, size_y, size_x, map_addr = self.data_manager.read_map_2d()
-                current_factor = self.factor_z_2d
-                current_offset = self.offset_z_2d
-                current_fmt = self.data_manager.z_format_2d
+                current_factor = custom.get('factor', self.factor_z_2d)
+                current_offset = custom.get('offset', self.offset_z_2d)
+                current_fmt = custom.get('z_format', self.data_manager.z_format_2d)
                 
             matrix_z = (raw_matrix * current_factor) + current_offset
             
