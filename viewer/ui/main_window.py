@@ -1539,15 +1539,41 @@ class DensoViewerApp(QMainWindow):
             else:
                 chunks.append((addr, bpc))
 
-            addr_hex = f"{addr:08X}"
-            tag_data = self.data_manager.tags.get(addr_hex, {})
+            # Special logic: if user just right-clicked a single cell (or nothing),
+            # check if it belongs to an existing custom tag to edit it instead of creating a 1-byte tag.
+            base_addr_hex = None
+            if len(indexes) <= 1:
+                mid = self.data_manager.map_array[addr] if addr < len(self.data_manager.map_array) else -1
+                if mid != -1:
+                    info = self.data_manager.map_dicts_tuples.get(mid, {})      
+                    if info.get('color') == (255, 165, 0): # Custom tag check   
+                        b_addr = info.get('addr')
+                        if b_addr is not None:
+                            b_hex = f"{b_addr:08X}"
+                            tag_data = self.data_manager.tags.get(b_hex, {})    
+                            if tag_data:
+                                base_addr_hex = b_hex
+                                chunks = tag_data.get("chunks", [(b_addr, tag_data.get("length", 1))])
+
+            if not base_addr_hex:
+                base_addr_hex = f"{chunks[0][0]:08X}"
+
+            tag_data = self.data_manager.tags.get(base_addr_hex, {})
             current_tags = tag_data.get("tags", [])
 
             dlg = TagEditorDialog(current_tags, self)
             if dlg.exec() == QDialog.DialogCode.Accepted:
-                for c_start, c_len in chunks:
-                    c_hex = f"{c_start:08X}"
-                    self.data_manager.tags[c_hex] = {"tags": dlg.tags, "length": c_len}
+                if not dlg.tags:
+                    # If empty tags, user wants to remove it
+                    if base_addr_hex in self.data_manager.tags:
+                        del self.data_manager.tags[base_addr_hex]
+                else:
+                    total_len = sum(l for _, l in chunks)
+                    self.data_manager.tags[base_addr_hex] = {
+                        "tags": dlg.tags, 
+                        "length": total_len,
+                        "chunks": chunks
+                    }
 
                 addr_col = 'Map_Z_Addr' if self.map_mode == '3d' else 'Curve_Data_Addr'
                 if not self.data_manager.df.empty:
@@ -1556,12 +1582,12 @@ class DensoViewerApp(QMainWindow):
                         c_hex = f"{c_start:08X}"
                         match_idx = df.index[df[addr_col].str.strip().str.upper() == c_hex]
                         if not match_idx.empty:
-                            df.loc[match_idx, 'Tag'] = ", ".join(dlg.tags)
+                            df.loc[match_idx, 'Tag'] = ", ".join(dlg.tags)      
 
-                self.data_manager.build_color_map(highlight_3d=self.highlight_3d, highlight_2d=self.highlight_2d, highlight_custom=self.highlight_custom_tags)
+                self.data_manager.build_color_map(highlight_3d=self.highlight_3d, highlight_2d=self.highlight_2d, highlight_custom=self.highlight_custom_tags)  
                 self.update_tag_filter_menu()
                 self.update_list()
-                if hasattr(self.data_manager, 'current_map_addr') and self.data_manager.current_map_addr == addr_hex:
+                if hasattr(self.data_manager, 'current_map_addr') and self.data_manager.current_map_addr == base_addr_hex:
                     self.sync_listbox_selection()
                 self.update_hex_view()
 
@@ -1609,7 +1635,6 @@ class DensoViewerApp(QMainWindow):
                 if hasattr(self.data_manager, 'current_map_addr') and self.data_manager.current_map_addr == addr:
                     self.sync_listbox_selection()
             
-            self.draw_map()
             self.update_hex_view()
 
     def save_project(self):

@@ -1,6 +1,7 @@
 import os
 import struct
 import json
+import math
 import numpy as np
 import pandas as pd
 
@@ -271,26 +272,36 @@ class DataManager:
                     addr = int(addr_hex, 16)
                     if addr in csv_addrs:
                         continue  # Skip 2D/3D map tagging so it remains green/blue
-                    length = tag_data.get("length", 1)
-                    if addr + length <= len(self.map_array):
-                        tags_list = tag_data.get("tags", [])
-                        if not tags_list: continue
+                    tags_list = tag_data.get("tags", [])
+                    if not tags_list: continue
 
-                        has_painted = False
-                        for i in range(addr, addr + length):
-                            if i < len(self.map_array):
-                                self.map_array[i] = map_id
-                                has_painted = True
-                                
-                        if has_painted:
-                            tag_name = ", ".join(tags_list)
-                            self.map_dicts_tuples[map_id] = {
-                                'color': (255, 165, 0), # Orange
-                                'tag': tag_name,
-                                'addr': addr
-                            }
-                            map_id += 1
+                    has_painted = False
+                    
+                    chunks = tag_data.get("chunks")
+                    if chunks:
+                        for chunk_start, chunk_len in chunks:
+                            if chunk_start + chunk_len <= len(self.map_array):
+                                for i in range(chunk_start, chunk_start + chunk_len):
+                                    if i < len(self.map_array):
+                                        self.map_array[i] = map_id
+                                        has_painted = True
+                    else:
+                        length = tag_data.get("length", 1)
+                        if addr + length <= len(self.map_array):
+                            for i in range(addr, addr + length):
+                                if i < len(self.map_array):
+                                    self.map_array[i] = map_id
+                                    has_painted = True
+
+                    if has_painted:
+                        tag_name = ", ".join(tags_list)
+                        self.map_dicts_tuples[map_id] = {
+                            'color': (255, 165, 0), # Orange
+                            'tag': tag_name,
+                            'addr': addr
+                        }
+                        map_id += 1
+
                 except: pass
 
         return True
-
