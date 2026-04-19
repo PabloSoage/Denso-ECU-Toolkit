@@ -1,14 +1,17 @@
 import os
 import struct
+import json
 import numpy as np
 import pandas as pd
 
 class DataManager:
     def __init__(self):
+        self.project_path = ""
         self.bin_path = ""
         self.csv_3d_path = ""
         self.csv_2d_path = ""
         
+        self.tags = {}  # { hex_address: "Tag String" }
         self.df = pd.DataFrame()
         self.bin_data = b""
         
@@ -33,6 +36,14 @@ class DataManager:
             
         try:
             self.df = pd.read_csv(target_csv, dtype=str)
+            # Add Tags column
+            tags_list = []
+            for _, row in self.df.iterrows():
+                addr_col = 'Map_Z_Addr' if map_mode == '3d' else 'Curve_Data_Addr'
+                addr = str(row.get(addr_col, "")).strip().upper()
+                tags_list.append(self.tags.get(addr, ""))
+            self.df['Tag'] = tags_list
+            
             self.total_maps = len(self.df)
             self.current_index = 0
             self.current_map_addr = ""
@@ -114,6 +125,43 @@ class DataManager:
         except:
             return "??"
 
+    def save_project(self, file_path):
+        data = {
+            "bin_path": self.bin_path,
+            "csv_3d_path": self.csv_3d_path,
+            "csv_2d_path": self.csv_2d_path,
+            "tags": self.tags,
+            "z_format_3d": self.z_format_3d,
+            "z_format_2d": self.z_format_2d,
+            "ax_format": self.ax_format
+        }
+        try:
+            with open(file_path, 'w') as f:
+                json.dump(data, f, indent=4)
+            self.project_path = file_path
+            return True, ""
+        except Exception as e:
+            return False, str(e)
+
+    def load_project(self, file_path):
+        if not os.path.exists(file_path):
+            return False, "File not found"
+        try:
+            with open(file_path, 'r') as f:
+                data = json.load(f)
+            self.bin_path = data.get("bin_path", "")
+            self.csv_3d_path = data.get("csv_3d_path", "")
+            self.csv_2d_path = data.get("csv_2d_path", "")
+            self.tags = data.get("tags", {})
+            self.z_format_3d = data.get("z_format_3d", ">H")
+            self.z_format_2d = data.get("z_format_2d", ">f")
+            self.ax_format = data.get("ax_format", "f")
+            
+            self.project_path = file_path
+            return True, ""
+        except Exception as e:
+            return False, str(e)
+
     def build_color_map(self, highlight_3d=True, highlight_2d=True):
         if not os.path.exists(self.bin_path): return False
         try:
@@ -146,9 +194,12 @@ class DataManager:
                     if addr + length <= len(self.map_array):
                         for i in range(addr, addr + length):
                             self.map_array[i] = map_id
+                        tag_name = self.tags.get(addr_str.upper(), "")
+                        if not tag_name: tag_name = f"3D {addr_str} {sx}x{sy}"
+                            
                         self.map_dicts_tuples[map_id] = {
                             'color': (0, 191, 255), # DeepSkyBlue
-                            'tag': f"3D {addr_str} {sx}x{sy}",
+                            'tag': tag_name,
                             'addr': addr
                         }
                     map_id += 1
@@ -166,9 +217,13 @@ class DataManager:
                     if addr + length <= len(self.map_array):
                         for i in range(addr, addr + length):
                             self.map_array[i] = map_id
+                        
+                        tag_name = self.tags.get(addr_str.upper(), "")
+                        if not tag_name: tag_name = f"2D {addr_str} {sx}x1"
+                        
                         self.map_dicts_tuples[map_id] = {
                             'color': (50, 205, 50), # LimeGreen
-                            'tag': f"2D {addr_str} {sx}x1",
+                            'tag': tag_name,
                             'addr': addr
                         }
                     map_id += 1

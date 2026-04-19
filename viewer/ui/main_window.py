@@ -12,7 +12,7 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QHBoxLayout, QV
                              QTableWidget, QTableWidgetItem, QGroupBox, QRadioButton,
                              QFormLayout, QDialog, QDialogButtonBox, QDoubleSpinBox,
                              QTabWidget, QFileDialog, QMessageBox, QCheckBox, QTableView,
-                             QStyledItemDelegate, QInputDialog, QSplitter)
+                             QStyledItemDelegate, QInputDialog, QSplitter, QMenu)
 from PyQt6.QtCore import Qt, QEvent, QPointF, QRectF, QAbstractTableModel, QModelIndex, QVariant
 from PyQt6.QtGui import QPainter, QColor, QPolygonF, QBrush, QFont, QKeySequence, QShortcut
 
@@ -174,8 +174,24 @@ class DensoViewerApp(QMainWindow):
         self.map_listbox.itemSelectionChanged.connect(self.on_list_select)
         left_panel.addWidget(self.map_listbox)
         
-        main_layout.addLayout(left_panel, 1) 
+        # Tags and project management
+        hbox_tags = QHBoxLayout()
+        btn_tag = QPushButton("Edit Tag")
+        btn_tag.clicked.connect(self.edit_current_tag)
+        hbox_tags.addWidget(btn_tag)
+        left_panel.addLayout(hbox_tags)
         
+        hbox_proj = QHBoxLayout()
+        btn_load_proj = QPushButton("Load Proj")
+        btn_load_proj.clicked.connect(self.load_project)
+        btn_save_proj = QPushButton("Save Proj")
+        btn_save_proj.clicked.connect(self.save_project)
+        hbox_proj.addWidget(btn_load_proj)
+        hbox_proj.addWidget(btn_save_proj)
+        left_panel.addLayout(hbox_proj)
+
+        main_layout.addLayout(left_panel, 1)
+
         # --- RIGHT PANEL ---
         right_panel = QVBoxLayout()
         toolbar_layout = QHBoxLayout()
@@ -257,6 +273,8 @@ class DensoViewerApp(QMainWindow):
         # Hex Table
         self.hex_table = QTableView()
         self.hex_table.setItemDelegate(HexMapDelegate())
+        self.hex_table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.hex_table.customContextMenuRequested.connect(self.show_hex_context_menu)
         # The selectionModel is created when setModel is called later
         self.bottom_stack.addWidget(self.hex_table)
         
@@ -292,14 +310,20 @@ class DensoViewerApp(QMainWindow):
         search_term = self.search_box.text().lower()
         self.map_listbox.clear()
         self.filtered_indices = []
-        
+
         addr_col = 'Map_Z_Addr' if self.map_mode == '3d' else 'Curve_Data_Addr'
         for idx, row in self.data_manager.df.iterrows():
             addr = str(row.get(addr_col, '')).strip()
-            if search_term in addr.lower():
-                self.map_listbox.addItem(f"Map {idx+1}: {addr}")
+            tag = str(row.get('Tag', '')).strip()
+
+            display_text = f"Map {idx+1}: {addr}"
+            if tag:
+                display_text += f" [{tag}]"
+
+            if search_term in addr.lower() or search_term in tag.lower():
+                self.map_listbox.addItem(display_text)
                 self.filtered_indices.append(idx)
-                
+
         if self.filtered_indices:
             self.sync_listbox_selection()
 
@@ -307,8 +331,9 @@ class DensoViewerApp(QMainWindow):
         items = self.map_listbox.selectedIndexes()
         if items:
             visual_idx = items[0].row()
-            self.data_manager.current_index = self.filtered_indices[visual_idx]
-            self.draw_map()
+            if visual_idx < len(self.filtered_indices):
+                self.data_manager.current_index = self.filtered_indices[visual_idx]
+                self.draw_map()
 
     def prev_map(self):
         if self.data_manager.current_index > 0:
@@ -1200,5 +1225,75 @@ class DensoViewerApp(QMainWindow):
                 self.canvas.draw_idle()
             else:
                 self.table.clear()
+
+    def show_hex_context_menu(self, pos):
+        if self.btn_main_mode.text() != "Mode: Hex Dump": return
+        idx = self.hex_table.indexAt(pos)
+        if not idx.isValid(): return
+        
+        bpc = self.hex_table_model.bytes_per_col
+        if idx.column() == self.hex_table_model.data_cols: return
+        addr = idx.row() * 16 + idx.column() * bpc
+        
+        menu = QMenu(self)
+        action_tag = menu.addAction(f"Tag Map from {addr:08X}...")
+        
+        action = menu.exec(self.hex_table.viewport().mapToGlobal(pos))
+        if action == action_tag:
+            addr_hex = f"{addr:08X}"
+            current_tag = self.data_manager.tags.get(addr_hex, "")
+            new_tag, ok = QInputDialog.getText(self, "Add/Edit Tag", f"Set tag for {addr_hex}:", QLineEdit.EchoMode.Normal, current_tag)
+            if ok:
+                self.data_manager.tags[addr_hex] = new_tag
+                
+                addr_col = 'Map_Z_Addr' if self.map_mode == '3d' else 'Curve_Data_Addr'
+                if not self.data_manager.df.empty:
+                    df = self.data_manager.df
+                    match_idx = df.index[df[addr_col].str.strip().str.upper() == addr_hex]
+                    if not match_idx.empty:
+                        df.loc[match_idx, 'Tag'] = new_tag
+                
+                self.data_manager.build_color_map(highlight_3d=self.highlight_3d, highlight_2d=self.highlight_2d)
+                self.update_list()
+                if self.data_manager.current_map_addr == addr_hex:
+                    self.sync_listbox_selection()
+                self.update_hex_view()
+
+    def edit_current_tag(self):
+        if self.data_manager.df.empty: return
+        addr_col = 'Map_Z_Addr' if self.map_mode == '3d' else 'Curve_Data_Addr'
+        row = self.data_manager.df.iloc[self.data_manager.current_index]
+        addr = str(row.get(addr_col, '')).strip().upper()
+        current_tag = self.data_manager.tags.get(addr, "")
+        
+        new_tag, ok = QInputDialog.getText(self, "Edit Tag", f"Set tag for {addr}:", QLineEdit.EchoMode.Normal, current_tag)
+        if ok:
+            self.data_manager.tags[addr] = new_tag
+            self.data_manager.df.loc[self.data_manager.current_index, 'Tag'] = new_tag
+            self.data_manager.build_color_map(highlight_3d=self.highlight_3d, highlight_2d=self.highlight_2d)
+            self.update_list()
+            self.sync_listbox_selection()
+            self.update_hex_view()
+
+    def save_project(self):
+        path, _ = QFileDialog.getSaveFileName(self, "Save Project", "", "Denso Project (*.dproj *.json)")
+        if path:
+            success, err = self.data_manager.save_project(path)
+            if success:
+                QMessageBox.information(self, "Success", "Project saved successfully.")
+            else:
+                QMessageBox.critical(self, "Error", f"Could not save project:\n{err}")
+
+    def load_project(self):
+        path, _ = QFileDialog.getOpenFileName(self, "Load Project", "", "Denso Project (*.dproj *.json)")
+        if path:
+            success, err = self.data_manager.load_project(path)
+            if success:
+                self.load_data()
+                self.update_list()
+                self.sync_listbox_selection()
+                QMessageBox.information(self, "Success", "Project loaded successfully.")
+            else:
+                QMessageBox.critical(self, "Error", f"Could not load project:\n{err}")
 
 
