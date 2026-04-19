@@ -384,9 +384,13 @@ class DensoViewerApp(QMainWindow):
         if not hasattr(self, 'tag_filter_menu'): return
         self.tag_filter_menu.clear()
         all_tags = set()
-        for t_data in self.data_manager.tags.values():
-            for t in t_data.get("tags", []):
-                all_tags.add(t)
+        
+        if not self.data_manager.df.empty and 'Tag' in self.data_manager.df.columns:
+            for tag_str in self.data_manager.df['Tag'].fillna(''):
+                for t in str(tag_str).split(','):
+                    t = t.strip()
+                    if t:
+                        all_tags.add(t)
                 
         for t in sorted(all_tags):
             action = self.tag_filter_menu.addAction(t)
