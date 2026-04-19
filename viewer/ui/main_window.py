@@ -1105,7 +1105,11 @@ class DensoViewerApp(QMainWindow):
         self.canvas.draw_idle()
 
     def update_hex_view(self):
-        self.data_manager.build_color_map(self.highlight_3d, self.highlight_2d)
+        self.data_manager.build_color_map(
+            highlight_3d=self.highlight_3d, 
+            highlight_2d=self.highlight_2d, 
+            highlight_custom=getattr(self, 'highlight_custom_tags', True)
+        )
                 
         # Convert QColor from tuples
         map_dicts_qcolor = {}
@@ -1336,36 +1340,48 @@ class DensoViewerApp(QMainWindow):
 
         action = menu.exec(self.hex_table.viewport().mapToGlobal(pos))
         if action == action_tag:
-            ranges = self.hex_table.selectedRanges()
+            indexes = self.hex_table.selectionModel().selectedIndexes()
             length = bpc
-            start_addr = addr
-            if ranges:
-                r = ranges[0]
-                min_row, max_row = r.topRow(), r.bottomRow()
-                min_col, max_col = r.leftColumn(), r.rightColumn()
-                min_col = max(0, min(self.hex_table_model.data_cols - 1, min_col))
-                max_col = max(0, min(self.hex_table_model.data_cols - 1, max_col))
-                
-                sel_start = min_row * 16 + min_col * bpc
-                sel_end = max_row * 16 + max_col * bpc + bpc
-                if addr >= sel_start and addr < sel_end:
-                    start_addr = sel_start
-                    length = sel_end - sel_start
+            
+            addresses = []
+            for ix in indexes:
+                if ix.column() < self.hex_table_model.data_cols:
+                    addresses.append(ix.row() * 16 + ix.column() * bpc)
+            
+            chunks = []
+            if addresses:
+                addresses.sort()
+                c_start = addresses[0]
+                c_prev = addresses[0]
+                for a in addresses[1:]:
+                    if a == c_prev + bpc:
+                        c_prev = a
+                    else:
+                        chunks.append((c_start, (c_prev - c_start) + bpc))
+                        c_start = a
+                        c_prev = a
+                chunks.append((c_start, (c_prev - c_start) + bpc))
+            else:
+                chunks.append((addr, bpc))
 
-            addr_hex = f"{start_addr:08X}"
+            addr_hex = f"{addr:08X}"
             tag_data = self.data_manager.tags.get(addr_hex, {})
             current_tags = tag_data.get("tags", [])
-            
+
             dlg = TagEditorDialog(current_tags, self)
             if dlg.exec() == QDialog.DialogCode.Accepted:
-                self.data_manager.tags[addr_hex] = {"tags": dlg.tags, "length": length}
+                for c_start, c_len in chunks:
+                    c_hex = f"{c_start:08X}"
+                    self.data_manager.tags[c_hex] = {"tags": dlg.tags, "length": c_len}
 
                 addr_col = 'Map_Z_Addr' if self.map_mode == '3d' else 'Curve_Data_Addr'
                 if not self.data_manager.df.empty:
                     df = self.data_manager.df
-                    match_idx = df.index[df[addr_col].str.strip().str.upper() == addr_hex]
-                    if not match_idx.empty:
-                        df.loc[match_idx, 'Tag'] = ", ".join(dlg.tags)
+                    for c_start, _ in chunks:
+                        c_hex = f"{c_start:08X}"
+                        match_idx = df.index[df[addr_col].str.strip().str.upper() == c_hex]
+                        if not match_idx.empty:
+                            df.loc[match_idx, 'Tag'] = ", ".join(dlg.tags)
 
                 self.data_manager.build_color_map(highlight_3d=self.highlight_3d, highlight_2d=self.highlight_2d, highlight_custom=self.highlight_custom_tags)
                 self.update_tag_filter_menu()

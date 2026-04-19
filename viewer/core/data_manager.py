@@ -182,12 +182,14 @@ class DataManager:
         self.map_dicts_tuples = {}
 
         def get_bperval(fmt):
+            if not fmt: return 1
             f = fmt[-1].lower()
             if f == 'f': return 4
             elif f == 'h': return 2
             return 1
 
         map_id = 0
+        csv_addrs = set()
 
         if highlight_3d and os.path.exists(self.csv_3d_path):
             try:
@@ -196,6 +198,7 @@ class DataManager:
                 for _, row in df3.iterrows():
                     addr_str = str(row.get('Map_Z_Addr', '0')).strip()
                     addr = int(addr_str, 16)
+                    csv_addrs.add(addr)
                     sx = int(row.get('Size_X', 1))
                     sy = int(row.get('Size_Y', 1))
                     length = sx * sy * bpv
@@ -221,6 +224,7 @@ class DataManager:
                 for _, row in df2.iterrows():
                     addr_str = str(row.get('Curve_Data_Addr', '0')).strip()     
                     addr = int(addr_str, 16)
+                    csv_addrs.add(addr)
                     sx = int(row.get('Size_X', 1))
                     length = sx * bpv
                     if addr + length <= len(self.map_array):
@@ -243,6 +247,8 @@ class DataManager:
             for addr_hex, tag_data in self.tags.items():
                 try:
                     addr = int(addr_hex, 16)
+                    if addr in csv_addrs:
+                        continue  # Skip 2D/3D map tagging so it remains green/blue
                     length = tag_data.get("length", 1)
                     if addr + length <= len(self.map_array):
                         tags_list = tag_data.get("tags", [])
@@ -250,32 +256,7 @@ class DataManager:
 
                         has_painted = False
                         for i in range(addr, addr + length):
-                            if self.map_array[i] == -1:
-                                self.map_array[i] = map_id
-                                has_painted = True
-                                
-                        if has_painted:
-                            tag_name = ", ".join(tags_list)
-                            self.map_dicts_tuples[map_id] = {
-                                'color': (255, 165, 0), # Orange
-                                'tag': tag_name,
-                                'addr': addr
-                            }
-                            map_id += 1
-                except: pass
-
-        if highlight_custom:
-            for addr_hex, tag_data in self.tags.items():
-                try:
-                    addr = int(addr_hex, 16)
-                    length = tag_data.get("length", 1)
-                    if addr + length <= len(self.map_array):
-                        tags_list = tag_data.get("tags", [])
-                        if not tags_list: continue
-
-                        has_painted = False
-                        for i in range(addr, addr + length):
-                            if self.map_array[i] == -1:
+                            if i < len(self.map_array):
                                 self.map_array[i] = map_id
                                 has_painted = True
                                 
