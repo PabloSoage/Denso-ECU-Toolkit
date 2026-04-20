@@ -314,13 +314,11 @@ class DensoViewerApp(QMainWindow):
         toolbar_layout.addWidget(self.lbl_title)
         toolbar_layout.addStretch()
         
-        btn_prev = QPushButton("<- Prev Map")
-        btn_prev.clicked.connect(self.prev_map)
-        toolbar_layout.addWidget(btn_prev)
+        self.btn_prev_map = QPushButton("<- Prev Map")
+        self.btn_prev_map.clicked.connect(self.prev_map)
         
-        btn_next = QPushButton("Next Map ->")
-        btn_next.clicked.connect(self.next_map)
-        toolbar_layout.addWidget(btn_next)
+        self.btn_next_map = QPushButton("Next Map ->")
+        self.btn_next_map.clicked.connect(self.next_map)
 
         self.cmb_compare_mode = QComboBox()
         self.cmb_compare_mode.addItems([
@@ -333,12 +331,10 @@ class DensoViewerApp(QMainWindow):
             "Twin: Side-by-Side (Mod vs Ref)"
         ])
         self.cmb_compare_mode.currentIndexChanged.connect(self.on_compare_mode_changed)
-        toolbar_layout.addWidget(self.cmb_compare_mode)
 
         self.btn_set_ref = QPushButton("Set Reference Map")
         self.btn_set_ref.setToolTip("Set current map as Reference for comparison")
         self.btn_set_ref.clicked.connect(self.set_reference_map)
-        toolbar_layout.addWidget(self.btn_set_ref)
 
         self.btn_hex = QPushButton("Dec / Hex")
         self.btn_hex.clicked.connect(self.toggle_hex)
@@ -357,12 +353,13 @@ class DensoViewerApp(QMainWindow):
         
         self.btn_main_mode = QPushButton("Mode: Map Viewer")
         self.btn_main_mode.clicked.connect(self.toggle_main_mode)
+        self.btn_main_mode.setVisible(False)
         toolbar_layout.addWidget(self.btn_main_mode)
         
         self.btn_toggle = QPushButton("View: Plot")
         self.btn_toggle.clicked.connect(self.toggle_view)
         toolbar_layout.addWidget(self.btn_toggle)
-        
+
         btn_map_settings = QPushButton("⚙ Map Settings")
         btn_map_settings.clicked.connect(self.open_custom_map_settings)
         toolbar_layout.addWidget(btn_map_settings)
@@ -452,7 +449,15 @@ class DensoViewerApp(QMainWindow):
         
         self.status_lbl = QLabel("Hover over the graph to see values...")
         self.status_lbl.setStyleSheet("background-color: #222; color: #FFF; font-weight: bold; font-size: 14px; padding: 8px; border-radius: 4px;")
-        right_panel.addWidget(self.status_lbl)
+        
+        bottom_toolbar_layout = QHBoxLayout()
+        bottom_toolbar_layout.addWidget(self.status_lbl, 1)
+        bottom_toolbar_layout.addWidget(self.cmb_compare_mode)
+        bottom_toolbar_layout.addWidget(self.btn_set_ref)
+        bottom_toolbar_layout.addWidget(self.btn_prev_map)
+        bottom_toolbar_layout.addWidget(self.btn_next_map)
+
+        right_panel.addLayout(bottom_toolbar_layout)
         
         main_layout.addLayout(right_panel, 4) 
 
@@ -885,6 +890,18 @@ class DensoViewerApp(QMainWindow):
         gb_mode.setLayout(ly_mode)
         vbox_f.addWidget(gb_mode)
         
+        gb_main = QGroupBox("Main Application Mode")
+        ly_main = QHBoxLayout()
+        rb_main_map = QRadioButton("Map Viewer")
+        rb_main_hex = QRadioButton("Hex Dump")
+        if self.btn_main_mode.text() == "Mode: Hex Dump":
+            rb_main_hex.setChecked(True)
+        else:
+            rb_main_map.setChecked(True)
+        ly_main.addWidget(rb_main_map); ly_main.addWidget(rb_main_hex)
+        gb_main.setLayout(ly_main)
+        vbox_f.addWidget(gb_main)
+
         def add_file_row(parent, label, current_path):
             lay = QHBoxLayout()
             lay.addWidget(QLabel(label))
@@ -1072,6 +1089,13 @@ class DensoViewerApp(QMainWindow):
         layout.addWidget(btns)
         
         if dialog.exec():
+            if rb_main_hex.isChecked() and self.btn_main_mode.text() != "Mode: Hex Dump":
+                self.btn_main_mode.setText("Mode: Map Viewer")
+                self.toggle_main_mode()
+            elif rb_main_map.isChecked() and self.btn_main_mode.text() == "Mode: Hex Dump":
+                self.btn_main_mode.setText("Mode: Hex Dump")
+                self.toggle_main_mode()
+
             # Update engine
             new_engine = 'matplotlib' if self.rb_mpl.isChecked() else 'pyqtgraph'
             engine_changed = (new_engine != self.render_engine)
