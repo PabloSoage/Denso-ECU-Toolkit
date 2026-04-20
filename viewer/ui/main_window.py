@@ -12,7 +12,7 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QHBoxLayout, QV
                              QTableWidget, QTableWidgetItem, QGroupBox, QRadioButton,
                              QFormLayout, QDialog, QDialogButtonBox, QDoubleSpinBox,
                              QTabWidget, QFileDialog, QMessageBox, QCheckBox, QTableView, QComboBox, QComboBox,
-                             QStyledItemDelegate, QInputDialog, QSplitter, QMenu)
+                             QStyledItemDelegate, QInputDialog, QSplitter, QMenu, QAbstractItemView)
 from PyQt6.QtCore import Qt, QEvent, QPointF, QRectF, QAbstractTableModel, QModelIndex, QVariant
 from PyQt6.QtGui import QAction, QPainter, QColor, QPolygonF, QBrush, QFont, QKeySequence, QShortcut
 
@@ -188,11 +188,23 @@ class DensoViewerApp(QMainWindow):
         self.rebuild_plot_axes()
         self.draw_map()
 
+    def _sync_3d_axes(self, *args, **kwargs):
+        if not hasattr(self, 'ax') or not hasattr(self, 'ax2'): return
+        try:
+            if self.ax.elev != self.ax2.elev or self.ax.azim != self.ax2.azim:
+                self.ax2.view_init(elev=self.ax.elev, azim=self.ax.azim)
+                self.canvas.draw_idle()
+        except: pass
+
     def rebuild_plot_axes(self):
         self.fig.clf()
         is_3d = False
+        cmp_idx = getattr(self, "cmb_compare_mode", None)
+        is_twin = cmp_idx and cmp_idx.currentIndex() > 4
+
         if hasattr(self, 'btn_main_mode') and self.btn_main_mode.text() == "Mode: Hex Dump":
             is_3d = self.hex_plot_mode == '3d'
+            is_twin = False
         else:
             if not getattr(self, "data_manager", None) or getattr(self.data_manager, "df", None) is None or self.data_manager.df.empty:
                 is_3d = (self.map_mode == '3d' or (self.map_mode == 'tags' and self.hex_plot_mode == '3d'))
@@ -204,8 +216,17 @@ class DensoViewerApp(QMainWindow):
                 except Exception:
                     is_3d = (self.map_mode == '3d' or (self.map_mode == 'tags' and self.hex_plot_mode == '3d'))
 
+        if hasattr(self, 'ax2'): del self.ax2
+
         if is_3d:
-            self.ax = self.fig.add_subplot(111, projection='3d')
+            if is_twin:
+                self.ax = self.fig.add_subplot(121, projection='3d')
+                self.ax2 = self.fig.add_subplot(122, projection='3d')
+                self.ax2.set_navigate(False)
+                try: self.ax2.disable_mouse_rotation()
+                except AttributeError: pass
+            else:
+                self.ax = self.fig.add_subplot(111, projection='3d')
             self.ax.set_navigate(False)
             try: self.ax.disable_mouse_rotation()
             except AttributeError: pass
@@ -307,7 +328,9 @@ class DensoViewerApp(QMainWindow):
             "View: Show Original",
             "Compare: Difference (Mod - Orig)",
             "Compare: Difference (%)",
-            "Compare: Vs Reference"
+            "Compare: Vs Reference",
+            "Twin: Side-by-Side (Mod vs Orig)",
+            "Twin: Side-by-Side (Mod vs Ref)"
         ])
         self.cmb_compare_mode.currentIndexChanged.connect(self.on_compare_mode_changed)
         toolbar_layout.addWidget(self.cmb_compare_mode)
@@ -379,10 +402,21 @@ class DensoViewerApp(QMainWindow):
         self.bottom_stack = QStackedWidget()
         
         # Qt Table
+        self.table_split = QSplitter(Qt.Orientation.Horizontal)
         self.table = QTableWidget()
         self.table.itemChanged.connect(self.on_table_edit)
-        self.bottom_stack.addWidget(self.table)
+        self.table_orig = QTableWidget()
+        self.table_orig.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.table_orig.setVisible(False)
+        self.table_split.addWidget(self.table)
+        self.table_split.addWidget(self.table_orig)
+        self.bottom_stack.addWidget(self.table_split)
         
+        self.table.verticalScrollBar().valueChanged.connect(self.table_orig.verticalScrollBar().setValue)
+        self.table_orig.verticalScrollBar().valueChanged.connect(self.table.verticalScrollBar().setValue)
+        self.table.horizontalScrollBar().valueChanged.connect(self.table_orig.horizontalScrollBar().setValue)
+        self.table_orig.horizontalScrollBar().valueChanged.connect(self.table.horizontalScrollBar().setValue)
+
         # Hex Table
         self.hex_table = QTableView()
         self.hex_table.setItemDelegate(HexMapDelegate())
@@ -550,26 +584,33 @@ class DensoViewerApp(QMainWindow):
 
     def on_compare_mode_changed(self, idx):
         self.data_manager.show_modified = (idx != 1)
+        self.rebuild_plot_axes()
         self.draw_map()
 
     def set_reference_map(self):
         if self.data_manager.df.empty: return
         current_type = self.data_manager.df.iloc[self.data_manager.current_index].get('Map_Type', self.map_mode)
-        
+
         try:
             if current_type == 'tags':
                 is_2d = self.hex_plot_mode == '2d'
-                raw_matrix, _, _, _, _, _ = self.data_manager.read_map_tags(as_2d=is_2d)
+                raw_matrix, axis_x, axis_y, size_y, size_x, map_addr = self.data_manager.read_map_tags(as_2d=is_2d)
             elif current_type == '3d':
-                raw_matrix, _, _, _, _, _ = self.data_manager.read_map_3d()
+                raw_matrix, axis_x, axis_y, size_y, size_x, map_addr = self.data_manager.read_map_3d()
             else:
-                raw_matrix, _, _, _, _, _ = self.data_manager.read_map_2d()
-                
+                raw_matrix, axis_x, axis_y, size_y, size_x, map_addr = self.data_manager.read_map_2d()
+
             self.reference_matrix = raw_matrix.copy()
+            self.reference_axis_x = axis_x.copy()
+            self.reference_axis_y = axis_y.copy()
+            self.reference_size_x = size_x
+            self.reference_size_y = size_y
             QMessageBox.information(self, "Reference Set", f"Reference map set (Shape: {raw_matrix.shape}).")
             if getattr(self, "cmb_compare_mode", None) and self.cmb_compare_mode.currentIndex() == 4:
                 self.draw_map()
         except Exception as e:
+            import traceback
+            traceback.print_exc()
             QMessageBox.warning(self, "Error", f"Failed to set reference: {str(e)}")
 
     def sync_listbox_selection(self):
@@ -1127,8 +1168,16 @@ class DensoViewerApp(QMainWindow):
         if self.z_min == self.z_max: self.ax.set_zlim(self.z_min - 1, self.z_max + 1)
         else: self.ax.set_zlim(self.z_min, self.z_max)
             
-        self.ax.set_autoscale_on(False)
-        self.canvas.draw_idle()
+        if hasattr(self, 'ax2'):
+            self.ax2.set_xlim(self.center_x - x_range/2, self.center_x + x_range/2)
+            self.ax2.set_ylim(self.center_y + y_range/2, self.center_y - y_range/2)
+            
+            z_orig_min = getattr(self, 'z_orig_min', self.z_min)
+            z_orig_max = getattr(self, 'z_orig_max', self.z_max)
+            
+            if z_orig_min == z_orig_max: self.ax2.set_zlim(z_orig_min - 1, z_orig_max + 1)
+            else: self.ax2.set_zlim(z_orig_min, z_orig_max)
+            self.ax2.set_autoscale_on(False)
 
     def apply_2d_zoom(self):
         x_range = (self.abs_xlim[1] - self.abs_xlim[0]) / self.cam_zoom_2d
@@ -1189,6 +1238,7 @@ class DensoViewerApp(QMainWindow):
                     new_elev = max(-90, min(90, self.start_elev - (dy * sens)))
                     
                 self.ax.view_init(elev=new_elev, azim=new_azim)
+                self._sync_3d_axes()
                 self.canvas.draw_idle()
             
             else:
@@ -1559,9 +1609,12 @@ class DensoViewerApp(QMainWindow):
             matrix_z = (raw_matrix * current_factor) + current_offset
             
             cmp_index = getattr(self, "cmb_compare_mode", None)
-            if cmp_index and cmp_index.currentIndex() > 1:
-                cmp_idx = cmp_index.currentIndex()
-                if cmp_idx in (2, 3):
+            cmp_idx = cmp_index.currentIndex() if cmp_index else 0
+            matrix_orig = None
+            raw_orig = None
+
+            if cmp_idx > 1:
+                if cmp_idx in (2, 3, 5):
                     self.data_manager.show_modified = False
                     if current_type == 'tags':
                         raw_orig, _, _, _, _, _ = self.data_manager.read_map_tags(as_2d=(self.hex_plot_mode == '2d'))
@@ -1570,19 +1623,31 @@ class DensoViewerApp(QMainWindow):
                     else:
                         raw_orig, _, _, _, _, _ = self.data_manager.read_map_2d()
                     self.data_manager.show_modified = True
-                    orig_z = (raw_orig * current_factor) + current_offset
+                    matrix_orig = (raw_orig * current_factor) + current_offset
+                    
                     if cmp_idx == 2:
-                        matrix_z = matrix_z - orig_z
+                        matrix_z = matrix_z - matrix_orig
                     elif cmp_idx == 3:
-                        orig_safe = np.where(orig_z == 0, 1e-9, orig_z)
-                        matrix_z = ((matrix_z - orig_z) / orig_safe) * 100
-                elif cmp_idx == 4:
-                    if hasattr(self, "reference_matrix") and self.reference_matrix is not None:
-                        if self.reference_matrix.shape == matrix_z.shape:
-                            ref_z = (self.reference_matrix * current_factor) + current_offset
-                            matrix_z = matrix_z - ref_z
-                        else:
-                            matrix_z = np.zeros_like(matrix_z)
+                        orig_safe = np.where(matrix_orig == 0, 1e-9, matrix_orig)
+                        matrix_z = ((matrix_z - matrix_orig) / orig_safe) * 100
+                elif cmp_idx in (4, 6):
+                    if hasattr(self, "reference_matrix") and getattr(self, "reference_matrix", None) is not None:
+                        raw_orig = self.reference_matrix
+                        matrix_orig = (self.reference_matrix * current_factor) + current_offset
+                        
+                        if self.reference_matrix.shape != matrix_z.shape and cmp_idx == 4:
+                            new_orig = np.zeros_like(matrix_z)
+                            if len(matrix_z.shape) == 2 and len(self.reference_matrix.shape) == 2:
+                                min_y = min(matrix_z.shape[0], self.reference_matrix.shape[0])
+                                min_x = min(matrix_z.shape[1], self.reference_matrix.shape[1])
+                                new_orig[:min_y, :min_x] = matrix_orig[:min_y, :min_x]
+                            elif len(matrix_z.shape) == 1 and len(self.reference_matrix.shape) == 1:
+                                min_x = min(matrix_z.shape[0], self.reference_matrix.shape[0])
+                                new_orig[:min_x] = matrix_orig[:min_x]
+                            matrix_orig = new_orig
+                        
+                        if cmp_idx == 4:
+                            matrix_z = matrix_z - matrix_orig
 
             clean_axis_x = [str(round(v, 2)).rstrip('0').rstrip('.') for v in axis_x]
             if (current_type == '3d' or (current_type == 'tags' and self.hex_plot_mode == '3d')):
@@ -1595,6 +1660,13 @@ class DensoViewerApp(QMainWindow):
             self.map_size_y = size_y
             self.z_min = matrix_z.min()
             self.z_max = matrix_z.max()
+            
+            if cmp_idx > 4 and matrix_orig is not None:
+                self.z_orig_min = matrix_orig.min()
+                self.z_orig_max = matrix_orig.max()
+            else:
+                self.z_orig_min = self.z_min
+                self.z_orig_max = self.z_max
 
             # Axis Tags logic
             axis_x_addr = str(row.get('Axis_X_Addr', '')).strip().upper()
@@ -1655,6 +1727,8 @@ class DensoViewerApp(QMainWindow):
                             self.pg_canvas.draw_2d(axis_x, matrix_z)
                     else:
                         self.ax.clear()
+                        if hasattr(self, 'ax2'):
+                            self.ax2.clear()
 
                         if (current_type == '3d' or (current_type == 'tags' and self.hex_plot_mode == '3d')):
                             x_grid = np.arange(size_x)
@@ -1669,6 +1743,34 @@ class DensoViewerApp(QMainWindow):
                             self.ax.plot_surface(X, Y, matrix_z, cmap='jet', edgecolor='k', linewidth=0.3, alpha=0.9)
                             self.cursor_marker, = self.ax.plot([0], [0], [0], marker='o', color='red', markersize=8, zorder=10)
                             self.cursor_marker.set_visible(False)
+
+                            if hasattr(self, 'ax2') and cmp_idx > 4 and matrix_orig is not None:
+                                self.ax.set_title("Modified Map", fontsize=10, pad=0)
+                                self.ax2.set_title("Original / Reference", fontsize=10, pad=0)
+
+                                if cmp_idx == 6 and hasattr(self, "reference_matrix"):
+                                    orig_x_grid = np.arange(self.reference_size_x)
+                                    orig_y_grid = np.arange(self.reference_size_y)
+                                    X_orig, Y_orig = np.meshgrid(orig_x_grid, orig_y_grid)
+                                    orig_clean_axis_x = [str(round(v, 2)).rstrip('0').rstrip('.') for v in self.reference_axis_x]
+                                    orig_clean_axis_y = [str(round(v, 2)).rstrip('0').rstrip('.') for v in self.reference_axis_y]
+                                else:
+                                    orig_x_grid, orig_y_grid = x_grid, y_grid
+                                    X_orig, Y_orig = X, Y
+                                    orig_clean_axis_x, orig_clean_axis_y = clean_axis_x, clean_axis_y
+
+                                self.ax2.plot_surface(X_orig, Y_orig, matrix_orig, cmap='coolwarm', edgecolor='white', linewidth=0.3, alpha=0.9)
+                                self.ax2.set_xticks(orig_x_grid)
+                                self.ax2.set_xticklabels(orig_clean_axis_x, rotation=45, ha='right', fontsize=8)
+                                self.ax2.set_yticks(orig_y_grid)
+                                self.ax2.set_yticklabels(orig_clean_axis_y, fontsize=8)
+                                self.ax2.set_xlabel('\n' + self.x_label_str, labelpad=12)
+                                self.ax2.set_ylabel('\n' + self.y_label_str, labelpad=12)
+                                self.ax2.set_zlabel(self.z_label_3d_str, labelpad=12)
+                                self.ax2.invert_yaxis()
+                                try: self.ax2.set_box_aspect((2.5, 2.0, 0.6))
+                                except: pass
+                                self.ax2.view_init(elev=self.start_elev, azim=self.start_azim)
 
                             self.ax.set_xticks(x_grid)
                             self.ax.set_xticklabels(clean_axis_x, rotation=45, ha='right', fontsize=8)
@@ -1691,7 +1793,17 @@ class DensoViewerApp(QMainWindow):
                             self.z_flat = matrix_z
                             self.raw_flat = raw_matrix
 
-                            self.ax.plot(axis_x, matrix_z, marker='o', color='b', linewidth=2, markersize=5)
+                            if cmp_idx > 4 and matrix_orig is not None:
+                                if cmp_idx == 6 and hasattr(self, "reference_matrix"):
+                                    orig_ax = self.reference_axis_x
+                                else:
+                                    orig_ax = axis_x
+                                self.ax.plot(orig_ax, matrix_orig, marker='s', color='#888888', linestyle='--', linewidth=1.5, markersize=4, label='Original' if cmp_idx==5 else 'Reference')
+                                self.ax.plot(axis_x, matrix_z, marker='o', color='b', linewidth=2, markersize=5, label='Modified')
+                                self.ax.legend(loc='best')
+                            else:
+                                self.ax.plot(axis_x, matrix_z, marker='o', color='b', linewidth=2, markersize=5)
+                            
                             self.cursor_marker, = self.ax.plot([], [], marker='o', color='red', markersize=8, zorder=10)
                             self.cursor_marker.set_visible(False)
 
@@ -1706,10 +1818,30 @@ class DensoViewerApp(QMainWindow):
                 self.is_updating_table = True
                 self.table.clear()
                 self.table.setRowCount(size_y)
+                if cmp_idx > 4 and matrix_orig is not None:
+                    if cmp_idx == 6 and hasattr(self, "reference_matrix"):
+                        orig_sz_y = self.reference_size_y
+                        orig_sz_x = self.reference_size_x
+                        orig_cx = [str(round(v, 2)).rstrip('0').rstrip('.') for v in self.reference_axis_x]
+                        orig_cy = [str(round(v, 2)).rstrip('0').rstrip('.') for v in self.reference_axis_y]
+                    else:
+                        orig_sz_y, orig_sz_x = size_y, size_x
+                        orig_cx, orig_cy = clean_axis_x, clean_axis_y
+
+                    self.table_orig.setVisible(True)
+                    self.table_orig.clear()
+                    self.table_orig.setRowCount(orig_sz_y)
+                    self.table_orig.setColumnCount(orig_sz_x)
+                    self.table_orig.setHorizontalHeaderLabels(orig_cx)
+                    if (current_type == '3d' or (current_type == 'tags' and self.hex_plot_mode == '3d')):
+                        self.table_orig.setVerticalHeaderLabels(orig_cy)
+                    else:
+                        self.table_orig.setVerticalHeaderLabels(["Curve Data"])
+                else:
+                    self.table_orig.setVisible(False)
 
                 # Sum +1 for the Sparkline column
                 self.table.setColumnCount(size_x + 1)
-
                 headers = clean_axis_x + ["Profile"]
                 self.table.setHorizontalHeaderLabels(headers)
 
@@ -1740,7 +1872,7 @@ class DensoViewerApp(QMainWindow):
                                 cell_addr = base_addr + (i * size_x + j) * bpv
                                 if self.data_manager._bin_data_cache[cell_addr:cell_addr+bpv] != self.data_manager._modified_bin_data[cell_addr:cell_addr+bpv]:
                                     item.setForeground(QColor(255, 0, 0))
-                            if current_type != 'tags' and not (cmp_index and cmp_index.currentIndex() > 1): 
+                            if current_type != 'tags' and not (cmp_index and cmp_index.currentIndex() > 1):
                                 item.setData(Qt.ItemDataRole.UserRole, {
                                     "address": base_addr + (i * size_x + j) * bpv,
                                     "fmt_char": current_fmt[-1],
@@ -1755,9 +1887,10 @@ class DensoViewerApp(QMainWindow):
 
                             self.table.setItem(i, j, item)
 
-                        # Insert Sparkline in the last column
+                        # Insert Sparkline
                         spark = SparklineWidget(raw_matrix[i, :], raw_min, raw_max, self.sparkline_style)
                         self.table.setCellWidget(i, size_x, spark)
+
                 else:
                     self.table.setVerticalHeaderLabels(["Curve Data"])
                     for j in range(size_x):
@@ -1792,12 +1925,53 @@ class DensoViewerApp(QMainWindow):
                     # Insert Sparkline 2D
                     spark = SparklineWidget(raw_matrix, raw_min, raw_max, self.sparkline_style)
                     self.table.setCellWidget(0, size_x, spark)
+                if cmp_idx > 4 and matrix_orig is not None:
+                    is_3d = (current_type == '3d' or (current_type == 'tags' and self.hex_plot_mode == '3d'))
+                    if cmp_idx == 6 and hasattr(self, "reference_matrix"):
+                        orig_sz_y = self.reference_size_y
+                        orig_sz_x = self.reference_size_x
+                    else:
+                        orig_sz_y, orig_sz_x = size_y, size_x
+                    
+                    if is_3d:
+                        for i in range(orig_sz_y):
+                            for j in range(orig_sz_x):
+                                if self.display_hex:
+                                    vo = int(matrix_orig[i, j])
+                                    vo_str = self.data_manager.val_to_hex(vo, current_fmt[-1], current_fmt[0])
+                                else:
+                                    vo_str = f"{matrix_orig[i, j]:.2f}"
+                                item_orig = QTableWidgetItem(vo_str)
+                                item_orig.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                                item_orig.setFlags(item_orig.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                                item_orig.setForeground(QColor(80, 80, 80))
+                                self.table_orig.setItem(i, j, item_orig)
+                    else:
+                        for j in range(orig_sz_x):
+                            if self.display_hex:
+                                vo = matrix_orig[j]
+                                vo_str = self.data_manager.val_to_hex(vo, current_fmt[-1], current_fmt[0])
+                            else:
+                                vo_str = f"{matrix_orig[j]:.2f}"
+                            item_orig = QTableWidgetItem(vo_str)
+                            item_orig.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                            item_orig.setFlags(item_orig.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                            item_orig.setForeground(QColor(80, 80, 80))
+                            self.table_orig.setItem(0, j, item_orig)
+
+
+
+
 
                 self.table.resizeColumnsToContents()
                 self.table.setColumnWidth(size_x, 150)
+                if cmp_idx > 4 and matrix_orig is not None:
+                    self.table_orig.resizeColumnsToContents()
                 self.is_updating_table = False
 
         except Exception as e:
+            import traceback
+            traceback.print_exc()
             self.is_updating_table = False
             if self.view_mode in ('plot', 'split'):
                 self.ax.clear()
