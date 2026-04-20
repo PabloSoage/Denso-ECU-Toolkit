@@ -8,7 +8,7 @@ from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from mpl_toolkits.mplot3d import proj3d
 
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
-                             QListWidget, QLineEdit, QPushButton, QLabel, QStackedWidget,
+                             QListWidget, QListWidgetItem, QLineEdit, QPushButton, QLabel, QStackedWidget,
                              QTableWidget, QTableWidgetItem, QGroupBox, QRadioButton,
                              QFormLayout, QDialog, QDialogButtonBox, QDoubleSpinBox,
                              QTabWidget, QFileDialog, QMessageBox, QCheckBox, QTableView, QComboBox, QComboBox,
@@ -96,6 +96,8 @@ class DensoViewerApp(QMainWindow):
         self.data_manager.current_index = 0
         self.data_manager.total_maps = 0
         self.data_manager.current_map_addr = ""
+        
+        self.is_updating_table = False
         
         self.render_engine = 'matplotlib'
         self.map_mode = '3d'
@@ -298,7 +300,11 @@ class DensoViewerApp(QMainWindow):
         btn_next = QPushButton("Next Map ->")
         btn_next.clicked.connect(self.next_map)
         toolbar_layout.addWidget(btn_next)
-        
+
+        self.cb_show_original = QCheckBox("Show Original")
+        self.cb_show_original.toggled.connect(self.on_show_original_toggled)
+        toolbar_layout.addWidget(self.cb_show_original)
+
         self.btn_hex = QPushButton("Dec / Hex")
         self.btn_hex.clicked.connect(self.toggle_hex)
         self.btn_hex.setVisible(False)
@@ -362,6 +368,7 @@ class DensoViewerApp(QMainWindow):
         
         # Qt Table
         self.table = QTableWidget()
+        self.table.itemChanged.connect(self.on_table_edit)
         self.bottom_stack.addWidget(self.table)
         
         # Hex Table
@@ -377,9 +384,14 @@ class DensoViewerApp(QMainWindow):
         # Adjust Splitter Sizes (Plot gets roughly 60%, Table 40%)
         self.stacked_widget.setSizes([600, 400])
         
-        if self.view_mode == 'plot':
+        if self.view_mode in ('plot', 'split'):
             self.plot_container.setVisible(True)
-            self.bottom_stack.setVisible(False)
+            if self.view_mode == 'plot':
+                self.bottom_stack.setVisible(False)
+            else:
+                self.bottom_stack.setVisible(True)
+                self.bottom_stack.setCurrentIndex(0)
+                self.btn_hex.setVisible(True)
         else:
             self.plot_container.setVisible(False)
             self.bottom_stack.setVisible(True)
@@ -469,7 +481,36 @@ class DensoViewerApp(QMainWindow):
                         break
                         
             if term_match and tag_match:
-                self.map_listbox.addItem(display_text)
+                item = QListWidgetItem(display_text)
+                
+                # Check for modifications
+                try:
+                    is_modified = False
+                    if mtype == '3d':
+                        sz_h_row = str(row.get('Wrapper_Addr', '')).strip()
+                        cst = self.data_manager.custom_map_settings.get(sz_h_row, {})
+                        fmt = cst.get('z_format', self.data_manager.z_format_3d)
+                        fc = fmt[-1]
+                        bpv = 4 if fc.lower() in ('f','i','l') else (2 if fc.lower() == 'h' else 1)
+                        sx, sy = int(row.get('Size_X', 1)), int(row.get('Size_Y', 1))
+                        addr_int = int(str(row.get('Map_Z_Addr', '0')).strip(), 16)
+                        length = sx * sy * bpv
+                        is_modified = self.data_manager.is_map_modified(addr_int, length)
+                    elif mtype == '2d':
+                        sz_h_row = str(row.get('Wrapper_Addr', '')).strip()
+                        cst = self.data_manager.custom_map_settings.get(sz_h_row, {})
+                        fmt = cst.get('z_format', self.data_manager.z_format_2d)
+                        fc = fmt[-1]
+                        bpv = 4 if fc.lower() in ('f','i','l') else (2 if fc.lower() == 'h' else 1)
+                        sx = int(row.get('Size_X', 1))
+                        addr_int = int(str(row.get('Curve_Data_Addr', '0')).strip(), 16)
+                        length = sx * bpv
+                        is_modified = self.data_manager.is_map_modified(addr_int, length)
+                    if is_modified:
+                        item.setForeground(QColor(255, 0, 0))
+                except: pass
+                
+                self.map_listbox.addItem(item)
                 self.filtered_indices.append(idx)
 
         if self.filtered_indices:
@@ -494,7 +535,11 @@ class DensoViewerApp(QMainWindow):
             self.data_manager.current_index += 1
             self.sync_listbox_selection()
             self.draw_map()
-            
+
+    def on_show_original_toggled(self, checked):
+        self.data_manager.show_modified = not checked
+        self.draw_map()
+
     def sync_listbox_selection(self):
         if self.data_manager.current_index in self.filtered_indices:
             vis_idx = self.filtered_indices.index(self.data_manager.current_index)
@@ -520,10 +565,15 @@ class DensoViewerApp(QMainWindow):
             self.stacked_widget.insertWidget(1, self.bottom_stack)
             self.stacked_widget.setSizes([600, 400])
             
-            if self.view_mode == 'plot':
+            if self.view_mode in ('plot', 'split'):
                 self.plot_container.setVisible(True)
-                self.bottom_stack.setVisible(False)
-                self.btn_hex.setVisible(False)
+                if self.view_mode == 'plot':
+                    self.bottom_stack.setVisible(False)
+                    self.btn_hex.setVisible(False)
+                else:
+                    self.bottom_stack.setVisible(True)
+                    self.bottom_stack.setCurrentIndex(0) # Table
+                    self.btn_hex.setVisible(True)
             else:
                 self.plot_container.setVisible(False)
                 self.bottom_stack.setVisible(True)
@@ -583,21 +633,30 @@ class DensoViewerApp(QMainWindow):
                 self.stacked_widget.setSizes([400, 600])
 
     def toggle_view(self):
+        modes = ['plot', 'table', 'split']
+        idx = modes.index(self.view_mode)
+        self.view_mode = modes[(idx + 1) % len(modes)]
+
         if self.view_mode == 'plot':
-            self.view_mode = 'table'
+            self.btn_toggle.setText("View: Plot")
+            if self.btn_main_mode.text() == "Mode: Map Viewer":
+                self.plot_container.setVisible(True)
+                self.bottom_stack.setVisible(False)
+                self.btn_hex.setVisible(False)
+        elif self.view_mode == 'table':
             self.btn_toggle.setText("View: Table")
             if self.btn_main_mode.text() == "Mode: Map Viewer":
                 self.plot_container.setVisible(False)
                 self.bottom_stack.setVisible(True)
                 self.bottom_stack.setCurrentIndex(0)
                 self.btn_hex.setVisible(True)
-        else:
-            self.view_mode = 'plot'
-            self.btn_toggle.setText("View: Plot")
+        else: # split
+            self.btn_toggle.setText("View: Split")
             if self.btn_main_mode.text() == "Mode: Map Viewer":
                 self.plot_container.setVisible(True)
-                self.bottom_stack.setVisible(False)
-                self.btn_hex.setVisible(False)
+                self.bottom_stack.setVisible(True)
+                self.bottom_stack.setCurrentIndex(0)
+                self.btn_hex.setVisible(True)
         self.draw_map()
 
     def toggle_hex(self):
@@ -1370,6 +1429,50 @@ class DensoViewerApp(QMainWindow):
                 self.hex_table.setCurrentIndex(idx)
             except: pass
 
+    def on_table_edit(self, item):
+        if self.is_updating_table or not hasattr(self, 'data_manager'): return
+        meta = item.data(Qt.ItemDataRole.UserRole)
+        if not meta: return
+        
+        try:
+            val_str = item.text().strip()
+            
+            if meta["display_hex"]:
+                base = 16
+                # If negative hex representation, maybe handle it.
+                val = int(val_str, 16)
+            else:
+                val = float(val_str)
+                
+            if meta["display_hex"] and not meta["apply_factor_to_hex"]:
+                raw_val = val
+            else:
+                raw_val = (val - meta["offset"]) / meta["factor"]
+
+            success = self.data_manager.apply_edit(
+                meta["address"], 
+                old_val=None, 
+                new_val=raw_val, 
+                format_char=meta["fmt_char"], 
+                endian=meta["endian"]
+            )
+            
+            if success:
+                # Re-draw the entire map immediately to show the updated value, correct coloring (if applied), and update the graph
+                # But block signals or do it via a delayed call to avoid re-triggering while editing
+                import PyQt6.QtCore as QtCore
+                QTimer = QtCore.QTimer
+                QTimer.singleShot(0, self.draw_map)
+                QTimer.singleShot(0, self.update_list)
+            else:
+                QMessageBox.warning(self, "Edit Failed", "Could not apply edit to the binary data.")
+        except ValueError:
+            QMessageBox.warning(self, "Invalid Input", "Please enter a valid numeric value.")
+            # Trigger a re-draw to restore the old value
+            import PyQt6.QtCore as QtCore
+            QTimer = QtCore.QTimer
+            QTimer.singleShot(0, self.draw_map)
+
     def draw_map(self):
         if self.data_manager.df.empty:
             if self.btn_main_mode.text() == "Mode: Hex Dump":
@@ -1479,82 +1582,90 @@ class DensoViewerApp(QMainWindow):
             if self.btn_main_mode.text() == "Mode: Hex Dump":
                 self.update_hex_view()
                 self.update_hex_plot()
-            elif self.view_mode == 'plot':
-                is_pg = (self.render_engine == 'pyqtgraph')
-                self.canvas.setVisible(not is_pg)
-                self.pg_canvas.setVisible(is_pg)
-                
-                if is_pg:
-                    if (current_type == '3d' or (current_type == 'tags' and self.hex_plot_mode == '3d')):
-                        x_grid = np.arange(size_x)
-                        y_grid = np.arange(size_y)
-                        self.pg_canvas.draw_3d(x_grid, y_grid, matrix_z, clean_axis_x, clean_axis_y)
+            else:
+                if self.view_mode in ('plot', 'split'):
+                    is_pg = (self.render_engine == 'pyqtgraph')
+                    self.canvas.setVisible(not is_pg)
+                    self.pg_canvas.setVisible(is_pg)
+
+                    if is_pg:
+                        if (current_type == '3d' or (current_type == 'tags' and self.hex_plot_mode == '3d')):
+                            x_grid = np.arange(size_x)
+                            y_grid = np.arange(size_y)
+                            self.pg_canvas.draw_3d(x_grid, y_grid, matrix_z, clean_axis_x, clean_axis_y)
+                        else:
+                            self.pg_canvas.draw_2d(axis_x, matrix_z)
                     else:
-                        self.pg_canvas.draw_2d(axis_x, matrix_z)
-                    return
-                
-                self.ax.clear()
-                
-                if (current_type == '3d' or (current_type == 'tags' and self.hex_plot_mode == '3d')):
-                    x_grid = np.arange(size_x)
-                    y_grid = np.arange(size_y)
-                    X, Y = np.meshgrid(x_grid, y_grid)
-                    
-                    self.x_flat = X.flatten()
-                    self.y_flat = Y.flatten()
-                    self.z_flat = matrix_z.flatten()
-                    self.raw_flat = raw_matrix.flatten()
-                    
-                    self.ax.plot_surface(X, Y, matrix_z, cmap='jet', edgecolor='k', linewidth=0.3, alpha=0.9)
-                    self.cursor_marker, = self.ax.plot([0], [0], [0], marker='o', color='red', markersize=8, zorder=10)
-                    self.cursor_marker.set_visible(False)
-                    
-                    self.ax.set_xticks(x_grid)
-                    self.ax.set_xticklabels(clean_axis_x, rotation=45, ha='right', fontsize=8)
-                    self.ax.set_yticks(y_grid)
-                    self.ax.set_yticklabels(clean_axis_y, fontsize=8)
-                    
-                    self.ax.set_xlabel('\n' + self.x_label_str, labelpad=12)
-                    self.ax.set_ylabel('\n' + self.y_label_str, labelpad=12)
-                    self.ax.set_zlabel(self.z_label_3d_str, labelpad=12)
+                        self.ax.clear()
 
-                    self.ax.invert_yaxis()
-                    try: self.ax.set_box_aspect((2.5, 2.0, 0.6))
-                    except: pass
-                    
-                    self.ax.view_init(elev=self.start_elev, azim=self.start_azim)
-                    self.apply_3d_zoom()
-                    
-                elif (current_type == '2d' or (current_type == 'tags' and self.hex_plot_mode == '2d')):
-                    self.x_flat = axis_x
-                    self.z_flat = matrix_z
-                    self.raw_flat = raw_matrix
+                        if (current_type == '3d' or (current_type == 'tags' and self.hex_plot_mode == '3d')):
+                            x_grid = np.arange(size_x)
+                            y_grid = np.arange(size_y)
+                            X, Y = np.meshgrid(x_grid, y_grid)
 
-                    self.ax.plot(axis_x, matrix_z, marker='o', color='b', linewidth=2, markersize=5)
-                    self.cursor_marker, = self.ax.plot([], [], marker='o', color='red', markersize=8, zorder=10)
-                    self.cursor_marker.set_visible(False)
+                            self.x_flat = X.flatten()
+                            self.y_flat = Y.flatten()
+                            self.z_flat = matrix_z.flatten()
+                            self.raw_flat = raw_matrix.flatten()
 
-                    self.ax.set_xlabel(self.x_label_str)
-                    self.ax.set_ylabel(self.z_label_2d_str)
-                    self.ax.grid(True, linestyle='--', alpha=0.7)
-                    self.apply_2d_zoom()
+                            self.ax.plot_surface(X, Y, matrix_z, cmap='jet', edgecolor='k', linewidth=0.3, alpha=0.9)
+                            self.cursor_marker, = self.ax.plot([0], [0], [0], marker='o', color='red', markersize=8, zorder=10)
+                            self.cursor_marker.set_visible(False)
 
-                self.canvas.draw_idle()
-                
-            elif self.view_mode == 'table':
+                            self.ax.set_xticks(x_grid)
+                            self.ax.set_xticklabels(clean_axis_x, rotation=45, ha='right', fontsize=8)
+                            self.ax.set_yticks(y_grid)
+                            self.ax.set_yticklabels(clean_axis_y, fontsize=8)
+
+                            self.ax.set_xlabel('\n' + self.x_label_str, labelpad=12)
+                            self.ax.set_ylabel('\n' + self.y_label_str, labelpad=12)
+                            self.ax.set_zlabel(self.z_label_3d_str, labelpad=12)
+
+                            self.ax.invert_yaxis()
+                            try: self.ax.set_box_aspect((2.5, 2.0, 0.6))
+                            except: pass
+
+                            self.ax.view_init(elev=self.start_elev, azim=self.start_azim)
+                            self.apply_3d_zoom()
+
+                        elif (current_type == '2d' or (current_type == 'tags' and self.hex_plot_mode == '2d')):
+                            self.x_flat = axis_x
+                            self.z_flat = matrix_z
+                            self.raw_flat = raw_matrix
+
+                            self.ax.plot(axis_x, matrix_z, marker='o', color='b', linewidth=2, markersize=5)
+                            self.cursor_marker, = self.ax.plot([], [], marker='o', color='red', markersize=8, zorder=10)
+                            self.cursor_marker.set_visible(False)
+
+                            self.ax.set_xlabel(self.x_label_str)
+                            self.ax.set_ylabel(self.z_label_2d_str)
+                            self.ax.grid(True, linestyle='--', alpha=0.7)
+                            self.apply_2d_zoom()
+
+                        self.canvas.draw_idle()
+
+            if self.view_mode in ('table', 'split'):
+                self.is_updating_table = True
                 self.table.clear()
                 self.table.setRowCount(size_y)
-                
+
                 # Sum +1 for the Sparkline column
                 self.table.setColumnCount(size_x + 1)
-                
+
                 headers = clean_axis_x + ["Profile"]
                 self.table.setHorizontalHeaderLabels(headers)
-                
+
                 # Calculate the global min and max for proper scaling of green bars
                 raw_min = raw_matrix.min()
                 raw_max = raw_matrix.max()
-                
+
+                f_char = current_fmt[-1].lower()
+                if f_char == 'f': bpv = 4
+                elif f_char == 'h': bpv = 2
+                elif f_char in ('i', 'l'): bpv = 4
+                else: bpv = 1
+                base_addr = int(map_addr, 16)
+
                 if (current_type == '3d' or (current_type == 'tags' and self.hex_plot_mode == '3d')):
                     self.table.setVerticalHeaderLabels(clean_axis_y)
                     for i in range(size_y):
@@ -1564,11 +1675,29 @@ class DensoViewerApp(QMainWindow):
                                 val_str = self.data_manager.val_to_hex(v, current_fmt[-1], current_fmt[0])
                             else:
                                 val_str = f"{matrix_z[i, j]:.2f}"
-                                
+
                             item = QTableWidgetItem(val_str)
                             item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                            if getattr(self.data_manager, 'show_modified', True) and self.data_manager._modified_bin_data:
+                                cell_addr = base_addr + (i * size_x + j) * bpv
+                                if self.data_manager._bin_data_cache[cell_addr:cell_addr+bpv] != self.data_manager._modified_bin_data[cell_addr:cell_addr+bpv]:
+                                    item.setForeground(QColor(255, 0, 0))
+
+                            if current_type != 'tags':
+                                item.setData(Qt.ItemDataRole.UserRole, {
+                                    "address": base_addr + (i * size_x + j) * bpv,
+                                    "fmt_char": current_fmt[-1],
+                                    "endian": current_fmt[0],
+                                    "factor": current_factor,
+                                    "offset": current_offset,
+                                    "apply_factor_to_hex": self.apply_factor_to_hex,
+                                    "display_hex": self.display_hex
+                                })
+                            else:
+                                item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+
                             self.table.setItem(i, j, item)
-                            
+
                         # Insert Sparkline in the last column
                         spark = SparklineWidget(raw_matrix[i, :], raw_min, raw_max, self.sparkline_style)
                         self.table.setCellWidget(i, size_x, spark)
@@ -1580,27 +1709,47 @@ class DensoViewerApp(QMainWindow):
                             val_str = self.data_manager.val_to_hex(v, current_fmt[-1], current_fmt[0])
                         else:
                             val_str = f"{matrix_z[j]:.2f}"
-                            
+
                         item = QTableWidgetItem(val_str)
                         item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                        if getattr(self.data_manager, 'show_modified', True) and self.data_manager._modified_bin_data:
+                            cell_addr = base_addr + (j) * bpv
+                            if self.data_manager._bin_data_cache[cell_addr:cell_addr+bpv] != self.data_manager._modified_bin_data[cell_addr:cell_addr+bpv]:
+                                item.setForeground(QColor(255, 0, 0))
+
+                        if current_type != 'tags':
+                            item.setData(Qt.ItemDataRole.UserRole, {
+                                "address": base_addr + (j) * bpv,
+                                "fmt_char": current_fmt[-1],
+                                "endian": current_fmt[0],
+                                "factor": current_factor,
+                                "offset": current_offset,
+                                "apply_factor_to_hex": self.apply_factor_to_hex,
+                                "display_hex": self.display_hex
+                            })
+                        else:
+                            item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+
                         self.table.setItem(0, j, item)
-                        
+
                     # Insert Sparkline 2D
                     spark = SparklineWidget(raw_matrix, raw_min, raw_max, self.sparkline_style)
                     self.table.setCellWidget(0, size_x, spark)
-                        
+
                 self.table.resizeColumnsToContents()
                 self.table.setColumnWidth(size_x, 150)
-                
+                self.is_updating_table = False
+
         except Exception as e:
-            if self.view_mode == 'plot':
+            self.is_updating_table = False
+            if self.view_mode in ('plot', 'split'):
                 self.ax.clear()
                 if hasattr(self.ax, 'text2D'):
                     self.ax.text2D(0.5, 0.5, f"Error:\n{str(e)}", transform=self.ax.transAxes, ha='center', color='red')
                 else:
                     self.ax.text(0.5, 0.5, f"Error:\n{str(e)}", transform=self.ax.transAxes, ha='center', color='red')
                 self.canvas.draw_idle()
-            else:
+            if self.view_mode in ('table', 'split'):
                 self.table.clear()
 
     def show_hex_context_menu(self, pos):

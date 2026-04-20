@@ -22,6 +22,76 @@ class DataManager:
         self.total_maps = 0
         self.current_map_addr = ""
         self.custom_map_settings = {}
+        
+        self.show_modified = True
+        self._bin_data_cache = b""
+        self._modified_bin_data = bytearray()
+        self._cached_bin_path = ""
+
+    def _ensure_bin_loaded(self):
+        if self.bin_path != self._cached_bin_path or not self._bin_data_cache:
+            if os.path.exists(self.bin_path):
+                with open(self.bin_path, "rb") as f:
+                    self._bin_data_cache = f.read()
+                self._modified_bin_data = bytearray(self._bin_data_cache)
+                self._cached_bin_path = self.bin_path
+            else:
+                self._bin_data_cache = b""
+                self._modified_bin_data = bytearray()
+
+    def get_bin_data(self):
+        self._ensure_bin_loaded()
+        if self.show_modified and self._modified_bin_data:
+            return self._modified_bin_data
+        return self._bin_data_cache
+
+    def get_bin_diff(self):
+        if not self._bin_data_cache or not self._modified_bin_data:
+            return {}
+        arr_orig = np.frombuffer(self._bin_data_cache, dtype=np.uint8)
+        arr_mod = np.frombuffer(self._modified_bin_data, dtype=np.uint8)
+        diff_indices = np.nonzero(arr_orig != arr_mod)[0]
+        return {str(i): int(arr_mod[i]) for i in diff_indices}
+
+    def apply_bin_diff(self, diff_dict):
+        self._ensure_bin_loaded()
+        if not self._modified_bin_data: return
+        for k, v in diff_dict.items():
+            idx = int(k)
+            if idx < len(self._modified_bin_data):
+                self._modified_bin_data[idx] = int(v)
+
+    def is_map_modified(self, start_addr, size):
+        self._ensure_bin_loaded()
+        if not self._modified_bin_data or not self._bin_data_cache:
+            return False
+        if start_addr + size > len(self._modified_bin_data):
+            return False
+        return self._bin_data_cache[start_addr:start_addr+size] != self._modified_bin_data[start_addr:start_addr+size]
+
+    def apply_edit(self, address, old_val, new_val, count=1, format_char='f', endian='<'):
+        if not self._modified_bin_data:
+            return False
+            
+        try:
+            if format_char == 'f': bytes_per_value = 4
+            elif format_char.lower() == 'h': bytes_per_value = 2
+            elif format_char.lower() in ('i', 'l'): bytes_per_value = 4
+            else: bytes_per_value = 1
+            
+            if format_char.lower() != 'f':
+                new_val = int(round(new_val))
+            
+            pack_fmt = f"{endian}{format_char}"
+            raw_new = struct.pack(pack_fmt, new_val)
+            
+            for i in range(len(raw_new)):
+                self._modified_bin_data[address + i] = raw_new[i]
+                
+            return True
+        except Exception as e:
+            print("Error applying edit:", e)
+            return False
 
     def load_csv(self, map_mode):
         modes_to_load = [map_mode] if map_mode != 'all' else ['3d', '2d', 'tags']
@@ -91,9 +161,8 @@ class DataManager:
             elif f_char in ('i', 'l'): bytes_per_value = 4
             else: bytes_per_value = 1
             
-            with open(self.bin_path, "rb") as f:
-                f.seek(addr)
-                raw = f.read(size * bytes_per_value)
+            bin_data = self.get_bin_data()
+            raw = bin_data[addr:addr + size * bytes_per_value]
             return np.array(struct.unpack(f"{endian}{size}{axis_format}", raw)) 
         except:
             return np.arange(size)
@@ -117,9 +186,9 @@ class DataManager:
         elif fmt_char.lower() in ('i', 'l'): bytes_per_value = 4
         else: bytes_per_value = 1
 
-        with open(self.bin_path, "rb") as f:
-            f.seek(int(map_z_hex, 16))
-            raw_z_data = f.read(size_y * size_x * bytes_per_value)
+        bin_data = self.get_bin_data()
+        z_start = int(map_z_hex, 16)
+        raw_z_data = bin_data[z_start:z_start + size_y * size_x * bytes_per_value]
 
         z_values = struct.unpack(f"{endian}{size_y * size_x}{fmt_char}", raw_z_data)
         matrix_z = np.array(z_values).reshape((size_y, size_x))
@@ -145,9 +214,9 @@ class DataManager:
         elif fmt_char.lower() in ('i', 'l'): bytes_per_value = 4
         else: bytes_per_value = 1
 
-        with open(self.bin_path, "rb") as f:
-            f.seek(int(curve_data_hex, 16))
-            raw_z = f.read(size_x * bytes_per_value)
+        bin_data = self.get_bin_data()
+        z_start = int(curve_data_hex, 16)
+        raw_z = bin_data[z_start:z_start + size_x * bytes_per_value]
 
         z_values = struct.unpack(f"{endian}{size_x}{fmt_char}", raw_z)
         curve_z = np.array(z_values)
@@ -182,28 +251,28 @@ class DataManager:
         z_values = []
         chunk_sx = None
         chunk_sy = None
-        with open(self.bin_path, "rb") as f:
-            if chunks_str:
-                import ast
-                try:
-                    chunks = ast.literal_eval(chunks_str)
-                    chunk_sy = len(chunks)
-                    for i, (c_addr, c_len) in enumerate(chunks):
-                        f.seek(c_addr)
-                        raw_z = f.read(c_len)
-                        c_elements = c_len // bpc
-                        if i == 0:
-                            chunk_sx = c_elements
-                        if c_elements > 0:
-                            z_values.extend(struct.unpack(f"{endian}{c_elements}{fmt_char}", raw_z))
-                except:
-                    f.seek(int(addr_hex, 16))
-                    raw_z = f.read(num_elements * bpc)
-                    z_values = list(struct.unpack(f"{endian}{num_elements}{fmt_char}", raw_z))
-            else:
-                f.seek(int(addr_hex, 16))
-                raw_z = f.read(num_elements * bpc)
+        bin_data = self.get_bin_data()
+        
+        if chunks_str:
+            import ast
+            try:
+                chunks = ast.literal_eval(chunks_str)
+                chunk_sy = len(chunks)
+                for i, (c_addr, c_len) in enumerate(chunks):
+                    raw_z = bin_data[c_addr:c_addr + c_len]
+                    c_elements = c_len // bpc
+                    if i == 0:
+                        chunk_sx = c_elements
+                    if c_elements > 0:
+                        z_values.extend(struct.unpack(f"{endian}{c_elements}{fmt_char}", raw_z))
+            except:
+                z_start = int(addr_hex, 16)
+                raw_z = bin_data[z_start:z_start + num_elements * bpc]
                 z_values = list(struct.unpack(f"{endian}{num_elements}{fmt_char}", raw_z))
+        else:
+            z_start = int(addr_hex, 16)
+            raw_z = bin_data[z_start:z_start + num_elements * bpc]
+            z_values = list(struct.unpack(f"{endian}{num_elements}{fmt_char}", raw_z))
 
         num_elements = len(z_values)
 
@@ -257,7 +326,8 @@ class DataManager:
             "z_format_3d": self.z_format_3d,
             "z_format_2d": self.z_format_2d,
             "ax_format": self.ax_format,
-            "custom_map_settings": self.custom_map_settings
+            "custom_map_settings": self.custom_map_settings,
+            "bin_diff": self.get_bin_diff()
         }
         try:
             with open(file_path, 'w') as f:
@@ -304,6 +374,7 @@ class DataManager:
             self.z_format_2d = data.get("z_format_2d", ">f")
             self.ax_format = data.get("ax_format", "f")
             self.custom_map_settings = data.get("custom_map_settings", {})
+            self.apply_bin_diff(data.get("bin_diff", {}))
             
             self.project_path = file_path
             return True, ""
@@ -311,11 +382,8 @@ class DataManager:
             return False, str(e)
 
     def build_color_map(self, highlight_3d=True, highlight_2d=True, highlight_custom=True):
-        if not os.path.exists(self.bin_path): return False
-        try:
-            with open(self.bin_path, "rb") as f:
-                self.bin_data = f.read()
-        except: return False
+        self.bin_data = self.get_bin_data()
+        if not self.bin_data: return False
 
         self.map_array = [-1] * len(self.bin_data)
         self.map_dicts = {}
