@@ -13,13 +13,7 @@ class DataManager:
         self.csv_2d_path = ""
         
         self.tags = {}  # { hex_address: {"tags": ["Tag1", ...], "length": int} }
-        self.df = pd.DataFrame()
-        self.bin_data = b""
-        
-        self.map_array = []
-        self.map_dicts_tuples = {} # Tuples for color RGB to decouple from PyQt
-        self.map_dicts = {} # We still store original just in case
-        
+        self.hexdump_tags = {}  # { hex_address: {"tags": ["Tag1", ...], "length": int, "chunks": [...]} }
         self.z_format_3d = '>H'
         self.z_format_2d = '>f'
         self.ax_format = 'f'
@@ -30,28 +24,60 @@ class DataManager:
         self.custom_map_settings = {}
 
     def load_csv(self, map_mode):
-        target_csv = self.csv_3d_path if map_mode == '3d' else self.csv_2d_path
-        if not os.path.exists(target_csv):
+        modes_to_load = [map_mode] if map_mode != 'all' else ['3d', '2d', 'tags']
+        df_list = []
+        
+        for m in modes_to_load:
+            if m == 'tags':
+                rows = []
+                for addr_hex, data in self.hexdump_tags.items():
+                    tags_str = ', '.join(data.get('tags', []))
+                    length = data.get('length', 1)
+                    chunks = data.get('chunks', None)
+                    
+                    # You might want to grab user defined shape from custom map settings if defined
+                    custom = self.custom_map_settings.get(addr_hex, {})
+                    user_sx = custom.get('Size_X', min(length, 16))
+                    user_sy = custom.get('Size_Y', max(1, length // min(length, 16)))
+                    
+                    rows.append({
+                        'Map_Z_Addr': addr_hex,
+                        'Curve_Data_Addr': addr_hex,
+                        'Wrapper_Addr': addr_hex,
+                        'Size_X': str(user_sx),
+                        'Size_Y': str(user_sy),
+                        'Tag': tags_str,
+                        'Tag_Length': length,
+                        'Map_Type': 'tags',
+                        'Chunks': str(chunks) if chunks else ''
+                    })
+                df_tags = pd.DataFrame(rows)
+                df_list.append(df_tags)
+            else:
+                target_csv = self.csv_3d_path if m == '3d' else self.csv_2d_path
+                if os.path.exists(target_csv):
+                    try:
+                        df_csv = pd.read_csv(target_csv, dtype=str)
+                        df_csv['Map_Type'] = m
+                        tags_list = []
+                        for _, row in df_csv.iterrows():
+                            addr = str(row.get('Wrapper_Addr', '')).strip().upper()
+                            tags_list.append(', '.join(self.tags.get(addr, {}).get('tags', [])))
+                        df_csv['Tag'] = tags_list
+                        df_list.append(df_csv)
+                    except:
+                        pass
+        
+        if df_list:
+            self.df = pd.concat(df_list, ignore_index=True)
+            self.df = self.df.fillna('')
+        else:
             self.df = pd.DataFrame()
-            self.total_maps = 0
-            return False, f"File not found: {target_csv}"
             
-        try:
-            self.df = pd.read_csv(target_csv, dtype=str)
-            # Add Tags column
-            tags_list = []
-            for _, row in self.df.iterrows():
-                addr = str(row.get('Wrapper_Addr', "")).strip().upper()
-                tags_list.append(", ".join(self.tags.get(addr, {}).get("tags", [])))
-            self.df['Tag'] = tags_list
-            
-            self.total_maps = len(self.df)
-            self.current_index = 0
-            self.current_map_addr = ""
-            return True, ""
-        except Exception as e:
-            self.df = pd.DataFrame()
-            return False, f"Could not read CSV:\n{e}"
+        self.total_maps = len(self.df)
+        self.current_index = 0
+        self.current_map_addr = ''
+        return True, ''
 
     def read_axis(self, hex_addr, size, endian, axis_format):
         try:
@@ -131,7 +157,73 @@ class DataManager:
         size_y_dummy = 1
 
         return curve_z, axis_x, axis_y_dummy, size_y_dummy, size_x, curve_data_hex
+    def read_map_tags(self, as_2d=False):
+        row = self.df.iloc[self.current_index]
+        addr_hex = str(row['Map_Z_Addr']).strip()
+        length = int(row['Tag_Length'])
 
+        custom = self.custom_map_settings.get(addr_hex, {})
+        z_format = custom.get('z_format', self.z_format_3d)
+
+        endian = z_format[0]
+        fmt_char = z_format[-1]
+
+        bpc = 1
+        if fmt_char == 'f': bpc = 4
+        elif fmt_char.lower() == 'h': bpc = 2
+        elif fmt_char.lower() in ('i', 'l'): bpc = 4
+
+        num_elements = length // bpc
+        if num_elements == 0:
+            num_elements = 1
+            bpc = length
+            
+        chunks_str = str(row.get('Chunks', ''))
+        z_values = []
+        with open(self.bin_path, "rb") as f:
+            if chunks_str:
+                import ast
+                try:
+                    chunks = ast.literal_eval(chunks_str)
+                    for c_addr, c_len in chunks:
+                        f.seek(c_addr)
+                        raw_z = f.read(c_len)
+                        c_elements = c_len // bpc
+                        if c_elements > 0:
+                            z_values.extend(struct.unpack(f"{endian}{c_elements}{fmt_char}", raw_z))
+                except:
+                    f.seek(int(addr_hex, 16))
+                    raw_z = f.read(num_elements * bpc)
+                    z_values = list(struct.unpack(f"{endian}{num_elements}{fmt_char}", raw_z))
+            else:
+                f.seek(int(addr_hex, 16))
+                raw_z = f.read(num_elements * bpc)
+                z_values = list(struct.unpack(f"{endian}{num_elements}{fmt_char}", raw_z))
+
+        num_elements = len(z_values)
+
+        if as_2d:
+            size_y = 1
+            size_x = num_elements
+            matrix_z = np.array(z_values)
+        else:
+            size_x = int(row.get('Size_X', min(num_elements, 16)))
+            size_y = int(row.get('Size_Y', max(1, num_elements // max(size_x, 1))))
+            actual_elements = size_x * size_y
+
+            # Truncate or pad to fit matrix
+            z_array = np.array(z_values)
+            if len(z_array) > actual_elements:
+                z_array = z_array[:actual_elements]
+            elif len(z_array) < actual_elements:
+                z_array = np.pad(z_array, (0, actual_elements - len(z_array)), 'constant')
+
+            matrix_z = z_array.reshape((size_y, size_x))
+
+        axis_x = np.arange(size_x)
+        axis_y = np.arange(size_y)
+
+        return matrix_z, axis_x, axis_y, size_y, size_x, addr_hex
     def val_to_hex(self, val, fmt_char, endian):
         try:
             v_float = float(val)
@@ -152,6 +244,7 @@ class DataManager:
             "csv_3d_path": self.csv_3d_path,
             "csv_2d_path": self.csv_2d_path,
             "tags": self.tags,
+            "hexdump_tags": self.hexdump_tags,
             "z_format_3d": self.z_format_3d,
             "z_format_2d": self.z_format_2d,
             "ax_format": self.ax_format,
@@ -183,6 +276,21 @@ class DataManager:
                     self.tags[k] = {"tags": v, "length": 1}
                 elif isinstance(v, str):
                     self.tags[k] = {"tags": [t.strip() for t in v.split(",") if t.strip()], "length": 1}
+            
+            old_hexdump = data.get("hexdump_tags", {})
+            self.hexdump_tags = {}
+            for k, v in old_hexdump.items():
+                if isinstance(v, dict) and "tags" in v:
+                    self.hexdump_tags[k] = v
+            # To fix previous save where hexdump tags were injected into self.tags but had "chunks"
+            keys_to_move = []
+            for k, v in self.tags.items():
+                if "chunks" in v:
+                    self.hexdump_tags[k] = v
+                    keys_to_move.append(k)
+            for k in keys_to_move:
+                del self.tags[k]
+
             self.z_format_3d = data.get("z_format_3d", ">H")
             self.z_format_2d = data.get("z_format_2d", ">f")
             self.ax_format = data.get("ax_format", "f")
@@ -267,41 +375,41 @@ class DataManager:
             except: pass
             
         if highlight_custom:
-            for addr_hex, tag_data in self.tags.items():
-                try:
-                    addr = int(addr_hex, 16)
-                    if addr in csv_addrs:
-                        continue  # Skip 2D/3D map tagging so it remains green/blue
-                    tags_list = tag_data.get("tags", [])
-                    if not tags_list: continue
+            for source_dict in (self.tags, self.hexdump_tags):
+                for addr_hex, tag_data in source_dict.items():
+                    try:
+                        addr = int(addr_hex, 16)
+                        if addr in csv_addrs:
+                            continue  # Skip 2D/3D map tagging so it remains green/blue
+                        tags_list = tag_data.get("tags", [])
+                        if not tags_list: continue
 
-                    has_painted = False
-                    
-                    chunks = tag_data.get("chunks")
-                    if chunks:
-                        for chunk_start, chunk_len in chunks:
-                            if chunk_start + chunk_len <= len(self.map_array):
-                                for i in range(chunk_start, chunk_start + chunk_len):
+                        has_painted = False
+                        
+                        chunks = tag_data.get("chunks")
+                        if chunks:
+                            for chunk_start, chunk_len in chunks:
+                                if chunk_start + chunk_len <= len(self.map_array):  
+                                    for i in range(chunk_start, chunk_start + chunk_len):
+                                        if i < len(self.map_array):
+                                            self.map_array[i] = map_id
+                                            has_painted = True
+                        else:
+                            length = tag_data.get("length", 1)
+                            if addr + length <= len(self.map_array):
+                                for i in range(addr, addr + length):
                                     if i < len(self.map_array):
                                         self.map_array[i] = map_id
                                         has_painted = True
-                    else:
-                        length = tag_data.get("length", 1)
-                        if addr + length <= len(self.map_array):
-                            for i in range(addr, addr + length):
-                                if i < len(self.map_array):
-                                    self.map_array[i] = map_id
-                                    has_painted = True
 
-                    if has_painted:
-                        tag_name = ", ".join(tags_list)
-                        self.map_dicts_tuples[map_id] = {
-                            'color': (255, 165, 0), # Orange
-                            'tag': tag_name,
-                            'addr': addr
-                        }
-                        map_id += 1
-
-                except: pass
+                        if has_painted:
+                            tag_name = ", ".join(tags_list)
+                            self.map_dicts_tuples[map_id] = {
+                                'color': (255, 165, 0), # Orange
+                                'tag': tag_name,
+                                'addr': addr
+                            }
+                            map_id += 1
+                    except: pass
 
         return True

@@ -13,9 +13,7 @@ class CustomCanvas(FigureCanvas):
         if delta == 0: return
         zoom_in = delta > 0
 
-        is_3d = self.parent_app.map_mode == '3d'
-        if self.parent_app.btn_main_mode.text() == "Mode: Hex Dump":
-            is_3d = self.parent_app.hex_plot_mode == '3d'
+        is_3d = getattr(self.parent_app.ax, 'name', '') == '3d'
 
         if is_3d:
             factor = 1.15 if zoom_in else 0.85

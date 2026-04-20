@@ -192,12 +192,20 @@ class DensoViewerApp(QMainWindow):
         if hasattr(self, 'btn_main_mode') and self.btn_main_mode.text() == "Mode: Hex Dump":
             is_3d = self.hex_plot_mode == '3d'
         else:
-            is_3d = self.map_mode == '3d'
-            
+            if not getattr(self, "data_manager", None) or getattr(self.data_manager, "df", None) is None or self.data_manager.df.empty:
+                is_3d = (self.map_mode == '3d' or (self.map_mode == 'tags' and self.hex_plot_mode == '3d'))
+            else:
+                try:
+                    row = self.data_manager.df.iloc[self.data_manager.current_index]
+                    current_type = row.get('Map_Type', self.map_mode)
+                    is_3d = (current_type == '3d' or (current_type == 'tags' and self.hex_plot_mode == '3d'))
+                except Exception:
+                    is_3d = (self.map_mode == '3d' or (self.map_mode == 'tags' and self.hex_plot_mode == '3d'))
+
         if is_3d:
             self.ax = self.fig.add_subplot(111, projection='3d')
             self.ax.set_navigate(False)
-            try: self.ax.disable_mouse_rotation() 
+            try: self.ax.disable_mouse_rotation()
             except AttributeError: pass
         else:
             self.ax = self.fig.add_subplot(111)
@@ -211,6 +219,17 @@ class DensoViewerApp(QMainWindow):
         
         # --- LEFT PANEL ---
         left_panel = QVBoxLayout()
+        
+        self.cmb_map_type = QComboBox()
+        self.cmb_map_type.addItems(["3D Maps", "2D Maps", "Hexdump Tags", "All"])
+        self.cmb_map_type.currentIndexChanged.connect(self.on_map_type_changed)
+        left_panel.addWidget(self.cmb_map_type)
+        
+        if self.map_mode == '2d':
+            self.cmb_map_type.setCurrentIndex(1)
+        elif self.map_mode == 'tags':
+            self.cmb_map_type.setCurrentIndex(2)
+
         left_panel.addWidget(QLabel("<b>Search Map Address/Tag:</b>"))
 
         search_layout = QHBoxLayout()
@@ -405,18 +424,37 @@ class DensoViewerApp(QMainWindow):
             self.active_tag_filters.discard(tag)
         self.update_list()
 
+    def on_map_type_changed(self, idx):
+        if idx == 0: new_mode = '3d'
+        elif idx == 1: new_mode = '2d'
+        elif idx == 2: new_mode = 'tags'
+        else: new_mode = 'all'
+        
+        if new_mode != self.map_mode:
+            self.map_mode = new_mode
+            if self.btn_main_mode.text() == "Mode: Map Viewer":
+                self.btn_hex_plot_mode.setVisible(self.map_mode == 'tags')
+            self.load_data()
+
     def update_list(self):
-        if self.data_manager.df.empty: return
-        search_term = self.search_box.text().lower()
         self.map_listbox.clear()
         self.filtered_indices = []
-
-        addr_col = 'Map_Z_Addr' if self.map_mode == '3d' else 'Curve_Data_Addr'
+        if self.data_manager.df.empty: return
+        
+        search_term = self.search_box.text().lower()
+        
         for idx, row in self.data_manager.df.iterrows():
+            mtype = row.get('Map_Type', self.map_mode)
+            
+            # For 3D and Hexdump Tags, use Map_Z_Addr as the title. For 2D, Curve_Data_Addr
+            addr_col = 'Map_Z_Addr' if mtype in ('3d', 'tags') else 'Curve_Data_Addr'
             addr = str(row.get(addr_col, '')).strip()
             tag = str(row.get('Tag', '')).strip()
 
-            display_text = f"Map {idx+1}: {addr}"
+            # Beautiful label indicating type
+            prefix = {"3d": "3D Map", "2d": "2D Crv", "tags": "HexTag"}.get(mtype, "Map")
+            
+            display_text = f"{prefix} {idx+1}: {addr}"
             if tag:
                 display_text += f" [{tag}]"
 
@@ -474,7 +512,7 @@ class DensoViewerApp(QMainWindow):
         if new_mode == 'Map Viewer':
             self.btn_toggle.setVisible(True)
             self.btn_hex_plot_toggle.setVisible(False)
-            self.btn_hex_plot_mode.setVisible(False)
+            self.btn_hex_plot_mode.setVisible(self.map_mode == 'tags')
             
             # Reset splitter order for map viewer
             self.stacked_widget.setOrientation(Qt.Orientation.Vertical)
@@ -525,8 +563,11 @@ class DensoViewerApp(QMainWindow):
             self.btn_hex_plot_mode.setText("Plot Mode: 3D")
             
         self.rebuild_plot_axes()
-        if self.btn_main_mode.text() == "Mode: Hex Dump" and self.hex_plot_visible:
-            self.update_hex_plot()
+        if self.btn_main_mode.text() == "Mode: Hex Dump":
+            if self.hex_plot_visible:
+                self.update_hex_plot()
+        elif self.map_mode == 'tags':
+            self.draw_map()
 
     def apply_splitter_position(self):
         if self.btn_main_mode.text() == "Mode: Hex Dump":
@@ -604,10 +645,10 @@ class DensoViewerApp(QMainWindow):
         frame = QGroupBox("Custom Settings")
         ly_frame = QFormLayout(frame)
         
-        glob_z = self.data_manager.z_format_3d if self.map_mode == '3d' else self.data_manager.z_format_2d
+        glob_z = self.data_manager.z_format_3d if (self.map_mode == '3d' or (self.map_mode == 'tags' and self.hex_plot_mode == '3d')) else self.data_manager.z_format_2d
         glob_ax = self.data_manager.ax_format
-        glob_f = self.factor_z_3d if self.map_mode == '3d' else self.factor_z_2d
-        glob_o = self.offset_z_3d if self.map_mode == '3d' else self.offset_z_2d
+        glob_f = self.factor_z_3d if (self.map_mode == '3d' or (self.map_mode == 'tags' and self.hex_plot_mode == '3d')) else self.factor_z_2d
+        glob_o = self.offset_z_3d if (self.map_mode == '3d' or (self.map_mode == 'tags' and self.hex_plot_mode == '3d')) else self.offset_z_2d
 
         z_fmt = custom.get('z_format', glob_z)
         ax_fmt = custom.get('ax_format', glob_ax)
@@ -694,9 +735,21 @@ class DensoViewerApp(QMainWindow):
         
         rb_m1 = QRadioButton("3D Maps")
         rb_m2 = QRadioButton("2D Curves")
-        if self.map_mode == '3d': rb_m1.setChecked(True)
-        else: rb_m2.setChecked(True)
-        ly_mode.addWidget(rb_m1); ly_mode.addWidget(rb_m2)
+        rb_m3 = QRadioButton("Hexdump Tags")
+        rb_m4 = QRadioButton("All (Dropdown)")
+        
+        # We need a new state variable to know if we are in 'All' mode or a forced restriction from settings
+        # Let's say if the dropdown is visible, we are in 'All' mode. By default let's use the combo state.
+        if self.cmb_map_type.isVisible():
+            rb_m4.setChecked(True)
+        elif self.map_mode == 'tags':
+            rb_m3.setChecked(True)
+        elif self.map_mode == '2d':
+            rb_m2.setChecked(True)
+        else:
+            rb_m1.setChecked(True)
+            
+        ly_mode.addWidget(rb_m1); ly_mode.addWidget(rb_m2); ly_mode.addWidget(rb_m3); ly_mode.addWidget(rb_m4)
         gb_mode.setLayout(ly_mode)
         vbox_f.addWidget(gb_mode)
         
@@ -894,9 +947,25 @@ class DensoViewerApp(QMainWindow):
                 self.render_engine = new_engine
 
             self.data_manager.bin_path = le_bin.text(); self.data_manager.csv_3d_path = le_3d.text(); self.data_manager.csv_2d_path = le_2d.text()
-            new_mode = '3d' if rb_m1.isChecked() else '2d'
-            if new_mode != self.map_mode:
+            
+            if rb_m4.isChecked():
+                self.cmb_map_type.setVisible(True)
+                modes_list = ['3d', '2d', 'tags', 'all']
+                if self.cmb_map_type.currentIndex() < len(modes_list):
+                    new_mode = modes_list[self.cmb_map_type.currentIndex()]
+                else:
+                    new_mode = 'all'
+            else:
+                self.cmb_map_type.setVisible(False)
+                if rb_m1.isChecked(): new_mode = '3d'
+                elif rb_m2.isChecked(): new_mode = '2d'
+                else: new_mode = 'tags'
+                
+            if new_mode != self.map_mode or getattr(self, 'last_dropdown_mode', None) != self.cmb_map_type.isVisible():
+                self.last_dropdown_mode = self.cmb_map_type.isVisible()
                 self.map_mode = new_mode
+                if self.btn_main_mode.text() == "Mode: Map Viewer":
+                    self.btn_hex_plot_mode.setVisible(self.map_mode == 'tags')
                 self.load_data() 
             
             is_little = self.cb_endian.isChecked()
@@ -994,7 +1063,7 @@ class DensoViewerApp(QMainWindow):
             self.mouse_x = event.x
             self.mouse_y = event.y
             
-            if self.map_mode == '3d' or (self.btn_main_mode.text() == "Mode: Hex Dump" and self.hex_plot_mode == '3d'):
+            if getattr(self.ax, "name", "") == "3d" or getattr(self.ax, "name", "") == "3d":
                 self.start_elev = self.ax.elev
                 self.start_azim = self.ax.azim
             else:
@@ -1003,7 +1072,7 @@ class DensoViewerApp(QMainWindow):
 
     def on_mouse_release(self, event):
         self.dragging = False
-        if self.map_mode == '3d' or (self.btn_main_mode.text() == "Mode: Hex Dump" and self.hex_plot_mode == '3d'):
+        if getattr(self.ax, "name", "") == "3d" or getattr(self.ax, "name", "") == "3d":
             self.start_elev = self.ax.elev
             self.start_azim = self.ax.azim
 
@@ -1013,7 +1082,7 @@ class DensoViewerApp(QMainWindow):
         if self.dragging:
             if event.x is None or event.y is None: return
             
-            if self.map_mode == '3d' or (self.btn_main_mode.text() == "Mode: Hex Dump" and self.hex_plot_mode == '3d'):
+            if getattr(self.ax, "name", "") == "3d" or getattr(self.ax, "name", "") == "3d":
                 dx = event.x - self.mouse_x
                 dy = event.y - self.mouse_y
                 sens = 0.4
@@ -1061,7 +1130,7 @@ class DensoViewerApp(QMainWindow):
             return
 
         try:
-            if self.map_mode == '3d' or (self.btn_main_mode.text() == "Mode: Hex Dump" and self.hex_plot_mode == '3d'):
+            if (self.map_mode == '3d' or (self.map_mode == 'tags' and self.hex_plot_mode == '3d')) or (self.btn_main_mode.text() == "Mode: Hex Dump" and self.hex_plot_mode == '3d'):
                 xs, ys, _ = proj3d.proj_transform(self.x_flat, self.y_flat, self.z_flat, self.ax.get_proj())
                 points2d = self.ax.transData.transform(np.column_stack([xs, ys]))
             else:
@@ -1073,7 +1142,7 @@ class DensoViewerApp(QMainWindow):
             if dists[min_idx] < 600: 
                 self.is_hovering = True
                 
-                if self.map_mode == '3d' or (self.btn_main_mode.text() == "Mode: Hex Dump" and self.hex_plot_mode == '3d'):
+                if (self.map_mode == '3d' or (self.map_mode == 'tags' and self.hex_plot_mode == '3d')) or (self.btn_main_mode.text() == "Mode: Hex Dump" and self.hex_plot_mode == '3d'):
                     self.hover_x = self.x_flat[min_idx]
                     self.hover_y = self.y_flat[min_idx]
                     best_z = self.z_flat[min_idx]
@@ -1275,7 +1344,7 @@ class DensoViewerApp(QMainWindow):
             }
         self.data_manager.map_dicts = map_dicts_qcolor
                 
-        fmt = self.data_manager.z_format_3d if self.map_mode == '3d' else self.data_manager.z_format_2d
+        fmt = self.data_manager.z_format_3d if (self.map_mode == '3d' or (self.map_mode == 'tags' and self.hex_plot_mode == '3d')) else self.data_manager.z_format_2d
         
         if not hasattr(self, 'hex_table_model'):
             self.hex_table_model = HexTableModel(self.data_manager.bin_data, self.data_manager.map_array, self.data_manager.map_dicts, fmt, self.sparkline_style)
@@ -1292,7 +1361,7 @@ class DensoViewerApp(QMainWindow):
         self.hex_table.setColumnWidth(self.hex_table_model.data_cols, 150)
             
         if not self.data_manager.df.empty:
-            addr_col = 'Map_Z_Addr' if self.map_mode == '3d' else 'Curve_Data_Addr'
+            addr_col = 'Map_Z_Addr' if (self.map_mode == '3d' or (self.map_mode == 'tags' and self.hex_plot_mode == '3d')) else 'Curve_Data_Addr'
             curr_addr_hex = str(self.data_manager.df.iloc[self.data_manager.current_index].get(addr_col, '0')).strip()
             try:
                 addr_int = int(curr_addr_hex, 16)
@@ -1302,13 +1371,42 @@ class DensoViewerApp(QMainWindow):
             except: pass
 
     def draw_map(self):
-        if self.data_manager.df.empty: return
+        if self.data_manager.df.empty:
+            if self.btn_main_mode.text() == "Mode: Hex Dump":
+                self.update_hex_view()
+            return
         try:
             row = self.data_manager.df.iloc[self.data_manager.current_index]
             wrapper_addr_hex = str(row['Wrapper_Addr']).strip()
             custom = getattr(self.data_manager, "custom_map_settings", {}).get(wrapper_addr_hex, {})
 
-            if self.map_mode == '3d':
+            current_type = row.get('Map_Type', self.map_mode)
+            
+            # Auto-rebuild axes if switching between 2D and 3D in 'All' mode    
+            is_currently_3d = hasattr(self.ax, 'plot_surface')
+            needs_3d = (current_type == '3d' or (current_type == 'tags' and self.hex_plot_mode == '3d'))
+            if is_currently_3d != needs_3d:
+                self.rebuild_plot_axes()
+            current_type = row.get('Map_Type', self.map_mode)
+            
+            # Auto-rebuild axes if switching between 2D and 3D in 'All' mode    
+            is_currently_3d = hasattr(self.ax, 'plot_surface')
+            needs_3d = (current_type == '3d' or (current_type == 'tags' and self.hex_plot_mode == '3d'))
+            if is_currently_3d != needs_3d:
+                self.rebuild_plot_axes()
+            current_type = row.get('Map_Type', self.map_mode)
+            if current_type == 'tags':
+                is_2d = self.hex_plot_mode == '2d'
+                raw_matrix, axis_x, axis_y, size_y, size_x, map_addr = self.data_manager.read_map_tags(as_2d=is_2d)
+                if is_2d:
+                    current_factor = custom.get('factor', self.factor_z_2d)
+                    current_offset = custom.get('offset', self.offset_z_2d)
+                    current_fmt = custom.get('z_format', self.data_manager.z_format_2d)
+                else:
+                    current_factor = custom.get('factor', self.factor_z_3d)
+                    current_offset = custom.get('offset', self.offset_z_3d)
+                    current_fmt = custom.get('z_format', self.data_manager.z_format_3d)
+            elif current_type == '3d':
                 raw_matrix, axis_x, axis_y, size_y, size_x, map_addr = self.data_manager.read_map_3d()
                 current_factor = custom.get('factor', self.factor_z_3d)
                 current_offset = custom.get('offset', self.offset_z_3d)
@@ -1322,7 +1420,7 @@ class DensoViewerApp(QMainWindow):
             matrix_z = (raw_matrix * current_factor) + current_offset
             
             clean_axis_x = [str(round(v, 2)).rstrip('0').rstrip('.') for v in axis_x]
-            if self.map_mode == '3d':
+            if (current_type == '3d' or (current_type == 'tags' and self.hex_plot_mode == '3d')):
                 clean_axis_y = [str(round(v, 2)).rstrip('0').rstrip('.') for v in axis_y]
                 self.real_axis_y = axis_y
             
@@ -1334,18 +1432,18 @@ class DensoViewerApp(QMainWindow):
             self.z_max = matrix_z.max()
 
             # Axis Tags logic
-            axis_x_addr = str(row['Axis_X_Addr']).strip().upper()
+            axis_x_addr = str(row.get('Axis_X_Addr', '')).strip().upper()
             x_tag = " ".join(self.data_manager.tags.get(axis_x_addr, {}).get("tags", [])) if axis_x_addr and axis_x_addr not in ('0', '0X0', '00000000') else ""
             self.x_label_str = f"X Axis [{x_tag}]" if x_tag else "X Axis"
 
-            if self.map_mode == '3d':
+            if (current_type == '3d' or (current_type == 'tags' and self.hex_plot_mode == '3d')):
                 axis_y_addr = str(row.get('Axis_Y_Addr', '')).strip().upper()
                 y_tag = " ".join(self.data_manager.tags.get(axis_y_addr, {}).get("tags", [])) if axis_y_addr and axis_y_addr not in ('0', '0X0', '00000000') else ""
                 self.y_label_str = f"Y Axis [{y_tag}]" if y_tag else "Y Axis"
             else:
                 self.y_label_str = "Y Axis"
 
-            map_addr_col = 'Map_Z_Addr' if self.map_mode == '3d' else 'Curve_Data_Addr'
+            map_addr_col = 'Map_Z_Addr' if (current_type == '3d' or (current_type == 'tags' and self.hex_plot_mode == '3d')) else 'Curve_Data_Addr'
             m_addr = str(row.get(map_addr_col, '0')).strip().upper()
             m_tag = " ".join(self.data_manager.tags.get(m_addr, {}).get("tags", []))
             self.z_label_3d_str = f"Z Data [{m_tag}]" if m_tag else "Z Data"
@@ -1383,7 +1481,7 @@ class DensoViewerApp(QMainWindow):
                 self.pg_canvas.setVisible(is_pg)
                 
                 if is_pg:
-                    if self.map_mode == '3d':
+                    if (current_type == '3d' or (current_type == 'tags' and self.hex_plot_mode == '3d')):
                         x_grid = np.arange(size_x)
                         y_grid = np.arange(size_y)
                         self.pg_canvas.draw_3d(x_grid, y_grid, matrix_z, clean_axis_x, clean_axis_y)
@@ -1393,7 +1491,7 @@ class DensoViewerApp(QMainWindow):
                 
                 self.ax.clear()
                 
-                if self.map_mode == '3d':
+                if (current_type == '3d' or (current_type == 'tags' and self.hex_plot_mode == '3d')):
                     x_grid = np.arange(size_x)
                     y_grid = np.arange(size_y)
                     X, Y = np.meshgrid(x_grid, y_grid)
@@ -1423,11 +1521,11 @@ class DensoViewerApp(QMainWindow):
                     self.ax.view_init(elev=self.start_elev, azim=self.start_azim)
                     self.apply_3d_zoom()
                     
-                elif self.map_mode == '2d':
+                elif (current_type == '2d' or (current_type == 'tags' and self.hex_plot_mode == '2d')):
                     self.x_flat = axis_x
                     self.z_flat = matrix_z
                     self.raw_flat = raw_matrix
-                    
+
                     self.ax.plot(axis_x, matrix_z, marker='o', color='b', linewidth=2, markersize=5)
                     self.cursor_marker, = self.ax.plot([], [], marker='o', color='red', markersize=8, zorder=10)
                     self.cursor_marker.set_visible(False)
@@ -1453,7 +1551,7 @@ class DensoViewerApp(QMainWindow):
                 raw_min = raw_matrix.min()
                 raw_max = raw_matrix.max()
                 
-                if self.map_mode == '3d':
+                if (current_type == '3d' or (current_type == 'tags' and self.hex_plot_mode == '3d')):
                     self.table.setVerticalHeaderLabels(clean_axis_y)
                     for i in range(size_y):
                         for j in range(size_x):
@@ -1517,12 +1615,12 @@ class DensoViewerApp(QMainWindow):
         if action == action_tag:
             indexes = self.hex_table.selectionModel().selectedIndexes()
             length = bpc
-            
+
             addresses = []
             for ix in indexes:
                 if ix.column() < self.hex_table_model.data_cols:
                     addresses.append(ix.row() * 16 + ix.column() * bpc)
-            
+
             chunks = []
             if addresses:
                 addresses.sort()
@@ -1545,12 +1643,12 @@ class DensoViewerApp(QMainWindow):
             if len(indexes) <= 1:
                 mid = self.data_manager.map_array[addr] if addr < len(self.data_manager.map_array) else -1
                 if mid != -1:
-                    info = self.data_manager.map_dicts_tuples.get(mid, {})      
-                    if info.get('color') == (255, 165, 0): # Custom tag check   
+                    info = self.data_manager.map_dicts_tuples.get(mid, {})
+                    if info.get('color') == (255, 165, 0): # Custom tag check
                         b_addr = info.get('addr')
                         if b_addr is not None:
                             b_hex = f"{b_addr:08X}"
-                            tag_data = self.data_manager.tags.get(b_hex, {})    
+                            tag_data = self.data_manager.hexdump_tags.get(b_hex, self.data_manager.tags.get(b_hex, {}))
                             if tag_data:
                                 base_addr_hex = b_hex
                                 chunks = tag_data.get("chunks", [(b_addr, tag_data.get("length", 1))])
@@ -1558,39 +1656,47 @@ class DensoViewerApp(QMainWindow):
             if not base_addr_hex:
                 base_addr_hex = f"{chunks[0][0]:08X}"
 
-            tag_data = self.data_manager.tags.get(base_addr_hex, {})
+            if not hasattr(self.data_manager, 'hexdump_tags'):
+                self.data_manager.hexdump_tags = {}
+
+            tag_data = self.data_manager.hexdump_tags.get(base_addr_hex, {})
             current_tags = tag_data.get("tags", [])
 
             dlg = TagEditorDialog(current_tags, self)
             if dlg.exec() == QDialog.DialogCode.Accepted:
                 if not dlg.tags:
                     # If empty tags, user wants to remove it
-                    if base_addr_hex in self.data_manager.tags:
-                        del self.data_manager.tags[base_addr_hex]
+                    if base_addr_hex in self.data_manager.hexdump_tags:
+                        del self.data_manager.hexdump_tags[base_addr_hex]
                 else:
                     total_len = sum(l for _, l in chunks)
-                    self.data_manager.tags[base_addr_hex] = {
-                        "tags": dlg.tags, 
+                    self.data_manager.hexdump_tags[base_addr_hex] = {
+                        "tags": dlg.tags,
                         "length": total_len,
                         "chunks": chunks
                     }
 
-                addr_col = 'Map_Z_Addr' if self.map_mode == '3d' else 'Curve_Data_Addr'
+                addr_col = 'Map_Z_Addr' if (self.map_mode == '3d' or (self.map_mode == 'tags' and self.hex_plot_mode == '3d')) else 'Curve_Data_Addr'
                 if not self.data_manager.df.empty:
                     df = self.data_manager.df
                     for c_start, _ in chunks:
                         c_hex = f"{c_start:08X}"
                         match_idx = df.index[df[addr_col].str.strip().str.upper() == c_hex]
                         if not match_idx.empty:
-                            df.loc[match_idx, 'Tag'] = ", ".join(dlg.tags)      
+                            df.loc[match_idx, 'Tag'] = ", ".join(dlg.tags)
 
-                self.data_manager.build_color_map(highlight_3d=self.highlight_3d, highlight_2d=self.highlight_2d, highlight_custom=self.highlight_custom_tags)  
+                self.data_manager.build_color_map(highlight_3d=self.highlight_3d, highlight_2d=self.highlight_2d, highlight_custom=getattr(self, 'highlight_custom_tags', True))
                 self.update_tag_filter_menu()
-                self.update_list()
+                # Re-load the csv correctly to update dataframe for tags mode
+                if self.map_mode in ('tags', 'all'):
+                    self.load_data()
+                else:
+                    self.update_list()
+                
                 if hasattr(self.data_manager, 'current_map_addr') and self.data_manager.current_map_addr == base_addr_hex:
                     self.sync_listbox_selection()
+                    
                 self.update_hex_view()
-
     def edit_specific_tag(self, target):
         if self.data_manager.df.empty: return
         row = self.data_manager.df.iloc[self.data_manager.current_index]        
@@ -1599,7 +1705,7 @@ class DensoViewerApp(QMainWindow):
             addr_col = 'Wrapper_Addr'
             title_prefix = "Map"
         elif target == 'z':
-            addr_col = 'Map_Z_Addr' if self.map_mode == '3d' else 'Curve_Data_Addr'
+            addr_col = 'Map_Z_Addr' if (self.map_mode == '3d' or (self.map_mode == 'tags' and self.hex_plot_mode == '3d')) else 'Curve_Data_Addr'
             title_prefix = "Z Data"
         elif target == 'x':
             addr_col = 'Axis_X_Addr'
