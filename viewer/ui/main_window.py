@@ -301,9 +301,21 @@ class DensoViewerApp(QMainWindow):
         btn_next.clicked.connect(self.next_map)
         toolbar_layout.addWidget(btn_next)
 
-        self.cb_show_original = QCheckBox("Show Original")
-        self.cb_show_original.toggled.connect(self.on_show_original_toggled)
-        toolbar_layout.addWidget(self.cb_show_original)
+        self.cmb_compare_mode = QComboBox()
+        self.cmb_compare_mode.addItems([
+            "View: Normal",
+            "View: Show Original",
+            "Compare: Difference (Mod - Orig)",
+            "Compare: Difference (%)",
+            "Compare: Vs Reference"
+        ])
+        self.cmb_compare_mode.currentIndexChanged.connect(self.on_compare_mode_changed)
+        toolbar_layout.addWidget(self.cmb_compare_mode)
+
+        self.btn_set_ref = QPushButton("Set Reference Map")
+        self.btn_set_ref.setToolTip("Set current map as Reference for comparison")
+        self.btn_set_ref.clicked.connect(self.set_reference_map)
+        toolbar_layout.addWidget(self.btn_set_ref)
 
         self.btn_hex = QPushButton("Dec / Hex")
         self.btn_hex.clicked.connect(self.toggle_hex)
@@ -536,9 +548,29 @@ class DensoViewerApp(QMainWindow):
             self.sync_listbox_selection()
             self.draw_map()
 
-    def on_show_original_toggled(self, checked):
-        self.data_manager.show_modified = not checked
+    def on_compare_mode_changed(self, idx):
+        self.data_manager.show_modified = (idx != 1)
         self.draw_map()
+
+    def set_reference_map(self):
+        if self.data_manager.df.empty: return
+        current_type = self.data_manager.df.iloc[self.data_manager.current_index].get('Map_Type', self.map_mode)
+        
+        try:
+            if current_type == 'tags':
+                is_2d = self.hex_plot_mode == '2d'
+                raw_matrix, _, _, _, _, _ = self.data_manager.read_map_tags(as_2d=is_2d)
+            elif current_type == '3d':
+                raw_matrix, _, _, _, _, _ = self.data_manager.read_map_3d()
+            else:
+                raw_matrix, _, _, _, _, _ = self.data_manager.read_map_2d()
+                
+            self.reference_matrix = raw_matrix.copy()
+            QMessageBox.information(self, "Reference Set", f"Reference map set (Shape: {raw_matrix.shape}).")
+            if getattr(self, "cmb_compare_mode", None) and self.cmb_compare_mode.currentIndex() == 4:
+                self.draw_map()
+        except Exception as e:
+            QMessageBox.warning(self, "Error", f"Failed to set reference: {str(e)}")
 
     def sync_listbox_selection(self):
         if self.data_manager.current_index in self.filtered_indices:
@@ -1523,9 +1555,35 @@ class DensoViewerApp(QMainWindow):
                 current_factor = custom.get('factor', self.factor_z_2d)
                 current_offset = custom.get('offset', self.offset_z_2d)
                 current_fmt = custom.get('z_format', self.data_manager.z_format_2d)
-                
+
             matrix_z = (raw_matrix * current_factor) + current_offset
             
+            cmp_index = getattr(self, "cmb_compare_mode", None)
+            if cmp_index and cmp_index.currentIndex() > 1:
+                cmp_idx = cmp_index.currentIndex()
+                if cmp_idx in (2, 3):
+                    self.data_manager.show_modified = False
+                    if current_type == 'tags':
+                        raw_orig, _, _, _, _, _ = self.data_manager.read_map_tags(as_2d=(self.hex_plot_mode == '2d'))
+                    elif current_type == '3d':
+                        raw_orig, _, _, _, _, _ = self.data_manager.read_map_3d()
+                    else:
+                        raw_orig, _, _, _, _, _ = self.data_manager.read_map_2d()
+                    self.data_manager.show_modified = True
+                    orig_z = (raw_orig * current_factor) + current_offset
+                    if cmp_idx == 2:
+                        matrix_z = matrix_z - orig_z
+                    elif cmp_idx == 3:
+                        orig_safe = np.where(orig_z == 0, 1e-9, orig_z)
+                        matrix_z = ((matrix_z - orig_z) / orig_safe) * 100
+                elif cmp_idx == 4:
+                    if hasattr(self, "reference_matrix") and self.reference_matrix is not None:
+                        if self.reference_matrix.shape == matrix_z.shape:
+                            ref_z = (self.reference_matrix * current_factor) + current_offset
+                            matrix_z = matrix_z - ref_z
+                        else:
+                            matrix_z = np.zeros_like(matrix_z)
+
             clean_axis_x = [str(round(v, 2)).rstrip('0').rstrip('.') for v in axis_x]
             if (current_type == '3d' or (current_type == 'tags' and self.hex_plot_mode == '3d')):
                 clean_axis_y = [str(round(v, 2)).rstrip('0').rstrip('.') for v in axis_y]
@@ -1682,8 +1740,7 @@ class DensoViewerApp(QMainWindow):
                                 cell_addr = base_addr + (i * size_x + j) * bpv
                                 if self.data_manager._bin_data_cache[cell_addr:cell_addr+bpv] != self.data_manager._modified_bin_data[cell_addr:cell_addr+bpv]:
                                     item.setForeground(QColor(255, 0, 0))
-
-                            if current_type != 'tags':
+                            if current_type != 'tags' and not (cmp_index and cmp_index.currentIndex() > 1): 
                                 item.setData(Qt.ItemDataRole.UserRole, {
                                     "address": base_addr + (i * size_x + j) * bpv,
                                     "fmt_char": current_fmt[-1],
@@ -1717,7 +1774,7 @@ class DensoViewerApp(QMainWindow):
                             if self.data_manager._bin_data_cache[cell_addr:cell_addr+bpv] != self.data_manager._modified_bin_data[cell_addr:cell_addr+bpv]:
                                 item.setForeground(QColor(255, 0, 0))
 
-                        if current_type != 'tags':
+                        if current_type != 'tags' and not (cmp_index and cmp_index.currentIndex() > 1):
                             item.setData(Qt.ItemDataRole.UserRole, {
                                 "address": base_addr + (j) * bpv,
                                 "fmt_char": current_fmt[-1],
@@ -1916,5 +1973,3 @@ class DensoViewerApp(QMainWindow):
                 QMessageBox.information(self, "Success", "Project loaded successfully.")
             else:
                 QMessageBox.critical(self, "Error", f"Could not load project:\n{err}")
-
-
