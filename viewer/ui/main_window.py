@@ -566,7 +566,7 @@ class DensoViewerApp(QMainWindow):
         if self.btn_main_mode.text() == "Mode: Hex Dump":
             if self.hex_plot_visible:
                 self.update_hex_plot()
-        elif self.map_mode == 'tags':
+        else:
             self.draw_map()
 
     def apply_splitter_position(self):
@@ -1376,12 +1376,16 @@ class DensoViewerApp(QMainWindow):
                 self.update_hex_view()
             return
         try:
-            row = self.data_manager.df.iloc[self.data_manager.current_index]
+            row = self.data_manager.df.iloc[self.data_manager.current_index] 
             wrapper_addr_hex = str(row['Wrapper_Addr']).strip()
             custom = getattr(self.data_manager, "custom_map_settings", {}).get(wrapper_addr_hex, {})
 
             current_type = row.get('Map_Type', self.map_mode)
-            
+
+            # Update toggle button visibility dynamically for 'All' mode
+            if self.btn_main_mode.text() == "Mode: Map Viewer":
+                self.btn_hex_plot_mode.setVisible(current_type == 'tags' or self.map_mode == 'tags')
+
             # Auto-rebuild axes if switching between 2D and 3D in 'All' mode    
             is_currently_3d = hasattr(self.ax, 'plot_surface')
             needs_3d = (current_type == '3d' or (current_type == 'tags' and self.hex_plot_mode == '3d'))

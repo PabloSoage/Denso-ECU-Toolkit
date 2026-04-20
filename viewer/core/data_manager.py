@@ -180,15 +180,20 @@ class DataManager:
             
         chunks_str = str(row.get('Chunks', ''))
         z_values = []
+        chunk_sx = None
+        chunk_sy = None
         with open(self.bin_path, "rb") as f:
             if chunks_str:
                 import ast
                 try:
                     chunks = ast.literal_eval(chunks_str)
-                    for c_addr, c_len in chunks:
+                    chunk_sy = len(chunks)
+                    for i, (c_addr, c_len) in enumerate(chunks):
                         f.seek(c_addr)
                         raw_z = f.read(c_len)
                         c_elements = c_len // bpc
+                        if i == 0:
+                            chunk_sx = c_elements
                         if c_elements > 0:
                             z_values.extend(struct.unpack(f"{endian}{c_elements}{fmt_char}", raw_z))
                 except:
@@ -207,8 +212,12 @@ class DataManager:
             size_x = num_elements
             matrix_z = np.array(z_values)
         else:
-            size_x = int(row.get('Size_X', min(num_elements, 16)))
-            size_y = int(row.get('Size_Y', max(1, num_elements // max(size_x, 1))))
+            if chunk_sx is not None and chunk_sy is not None:
+                size_x = chunk_sx
+                size_y = chunk_sy
+            else:
+                size_x = int(row.get('Size_X', min(num_elements, 16)))
+                size_y = int(row.get('Size_Y', max(1, num_elements // max(size_x, 1))))
             actual_elements = size_x * size_y
 
             # Truncate or pad to fit matrix
