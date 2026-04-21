@@ -14,7 +14,7 @@ class TopControlsWidget(QWidget):
         self.main_window.lbl_title.setStyleSheet("font-size: 14px; font-weight: bold;")
         layout.addWidget(self.main_window.lbl_title)
         
-        self.main_window.btn_dtc_info = QPushButton("DTC Link 🚨")
+        self.main_window.btn_dtc_info = QPushButton("DTC Link")
         self.main_window.btn_dtc_info.setStyleSheet("background-color: #ffcc00; color: #000; font-weight: bold;")
         self.main_window.btn_dtc_info.clicked.connect(self.main_window.show_dtc_tracker)
         self.main_window.btn_dtc_info.setVisible(False)
