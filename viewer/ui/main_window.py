@@ -200,7 +200,7 @@ class DensoViewerApp(QMainWindow):
         self.fig.clf()
         is_3d = False
         cmp_idx = getattr(self, "cmb_compare_mode", None)
-        is_twin = cmp_idx and cmp_idx.currentIndex() > 4
+        is_twin = cmp_idx and cmp_idx.currentIndex() in (5, 6, 8)
 
         if hasattr(self, 'btn_main_mode') and self.btn_main_mode.text() == "Mode: Hex Dump":
             is_3d = self.hex_plot_mode == '3d'
@@ -303,6 +303,17 @@ class DensoViewerApp(QMainWindow):
         hbox_proj.addWidget(btn_save_proj)
         left_panel.addLayout(hbox_proj)
 
+        hbox_bin = QHBoxLayout()
+        self.btn_export_bin = QPushButton("Export Mod. Bin")
+        self.btn_export_bin.setToolTip("Export the binary with all your modifications")
+        self.btn_export_bin.clicked.connect(self.export_modified_bin)
+        self.btn_load_ref = QPushButton("Load Ref. Bin")
+        self.btn_load_ref.setToolTip("Load an external binary to use for Ext. Ref comparisons")
+        self.btn_load_ref.clicked.connect(self.load_reference_bin)
+        hbox_bin.addWidget(self.btn_export_bin)
+        hbox_bin.addWidget(self.btn_load_ref)
+        left_panel.addLayout(hbox_bin)
+
         main_layout.addLayout(left_panel, 1)
 
         # --- RIGHT PANEL ---
@@ -326,9 +337,11 @@ class DensoViewerApp(QMainWindow):
             "View: Show Original",
             "Compare: Difference (Mod - Orig)",
             "Compare: Difference (%)",
-            "Compare: Vs Reference",
+            "Compare: Vs Reference Map",
             "Twin: Side-by-Side (Mod vs Orig)",
-            "Twin: Side-by-Side (Mod vs Ref)"
+            "Twin: Side-by-Side (Mod vs Ref Map)",
+            "Compare: Difference (Mod - Ext. Bin)",
+            "Twin: Side-by-Side (Mod vs Ext. Bin)"
         ])
         self.cmb_compare_mode.currentIndexChanged.connect(self.on_compare_mode_changed)
 
@@ -589,6 +602,8 @@ class DensoViewerApp(QMainWindow):
 
     def on_compare_mode_changed(self, idx):
         self.data_manager.show_modified = (idx != 1)
+        if idx in (7, 8) and not self.data_manager._reference_bin_data:
+            QMessageBox.warning(self, "No External Reference", "Please load an external reference binary first using 'Load Ref. Bin'. Falling back to Original Bin comparison.")
         self.rebuild_plot_axes()
         self.draw_map()
 
@@ -1638,18 +1653,33 @@ class DensoViewerApp(QMainWindow):
             raw_orig = None
 
             if cmp_idx > 1:
-                if cmp_idx in (2, 3, 5):
+                if cmp_idx in (2, 3, 5, 7, 8):
                     self.data_manager.show_modified = False
-                    if current_type == 'tags':
-                        raw_orig, _, _, _, _, _ = self.data_manager.read_map_tags(as_2d=(self.hex_plot_mode == '2d'))
-                    elif current_type == '3d':
-                        raw_orig, _, _, _, _, _ = self.data_manager.read_map_3d()
-                    else:
-                        raw_orig, _, _, _, _, _ = self.data_manager.read_map_2d()
+                    
+                    is_ext_bin = cmp_idx in (7, 8)
+                    temp_cache = None
+                    if is_ext_bin:
+                        if self.data_manager._reference_bin_data:
+                            temp_cache = self.data_manager._bin_data_cache
+                            self.data_manager._bin_data_cache = self.data_manager._reference_bin_data
+                        else:
+                            is_ext_bin = False
+                    
+                    try:
+                        if current_type == 'tags':
+                            raw_orig, _, _, _, _, _ = self.data_manager.read_map_tags(as_2d=(self.hex_plot_mode == '2d'))
+                        elif current_type == '3d':
+                            raw_orig, _, _, _, _, _ = self.data_manager.read_map_3d()
+                        else:
+                            raw_orig, _, _, _, _, _ = self.data_manager.read_map_2d()
+                    finally:
+                        if is_ext_bin:
+                            self.data_manager._bin_data_cache = temp_cache
+
                     self.data_manager.show_modified = True
                     matrix_orig = (raw_orig * current_factor) + current_offset
                     
-                    if cmp_idx == 2:
+                    if cmp_idx in (2, 7):
                         matrix_z = matrix_z - matrix_orig
                     elif cmp_idx == 3:
                         orig_safe = np.where(matrix_orig == 0, 1e-9, matrix_orig)
@@ -1685,7 +1715,7 @@ class DensoViewerApp(QMainWindow):
             self.z_min = matrix_z.min()
             self.z_max = matrix_z.max()
             
-            if cmp_idx > 4 and matrix_orig is not None:
+            if cmp_idx in (5, 6, 8) and matrix_orig is not None:
                 self.z_orig_min = matrix_orig.min()
                 self.z_orig_max = matrix_orig.max()
             else:
@@ -1768,9 +1798,12 @@ class DensoViewerApp(QMainWindow):
                             self.cursor_marker, = self.ax.plot([0], [0], [0], marker='o', color='red', markersize=8, zorder=10)
                             self.cursor_marker.set_visible(False)
 
-                            if hasattr(self, 'ax2') and cmp_idx > 4 and matrix_orig is not None:
+                            if hasattr(self, 'ax2') and cmp_idx in (5, 6, 8) and matrix_orig is not None:
                                 self.ax.set_title("Modified Map", fontsize=10, pad=0)
-                                self.ax2.set_title("Original / Reference", fontsize=10, pad=0)
+                                if cmp_idx in (5, 6):
+                                    self.ax2.set_title("Original" if cmp_idx == 5 else "Reference Map", fontsize=10, pad=0)
+                                else:
+                                    self.ax2.set_title("External Bin", fontsize=10, pad=0)
 
                                 if cmp_idx == 6 and hasattr(self, "reference_matrix"):
                                     orig_x_grid = np.arange(self.reference_size_x)
@@ -1817,12 +1850,13 @@ class DensoViewerApp(QMainWindow):
                             self.z_flat = matrix_z
                             self.raw_flat = raw_matrix
 
-                            if cmp_idx > 4 and matrix_orig is not None:
+                            if cmp_idx in (5, 6, 8) and matrix_orig is not None:
                                 if cmp_idx == 6 and hasattr(self, "reference_matrix"):
                                     orig_ax = self.reference_axis_x
                                 else:
                                     orig_ax = axis_x
-                                self.ax.plot(orig_ax, matrix_orig, marker='s', color='#888888', linestyle='--', linewidth=1.5, markersize=4, label='Original' if cmp_idx==5 else 'Reference')
+                                lbl = 'Original' if cmp_idx in (5, 2, 3) else 'Ext. Bin' if cmp_idx in (7, 8) else 'Reference Map'
+                                self.ax.plot(orig_ax, matrix_orig, marker='s', color='#888888', linestyle='--', linewidth=1.5, markersize=4, label=lbl)
                                 self.ax.plot(axis_x, matrix_z, marker='o', color='b', linewidth=2, markersize=5, label='Modified')
                                 self.ax.legend(loc='best')
                             else:
@@ -1842,7 +1876,7 @@ class DensoViewerApp(QMainWindow):
                 self.is_updating_table = True
                 self.table.clear()
                 self.table.setRowCount(size_y)
-                if cmp_idx > 4 and matrix_orig is not None:
+                if cmp_idx in (5, 6, 8) and matrix_orig is not None:
                     if cmp_idx == 6 and hasattr(self, "reference_matrix"):
                         orig_sz_y = self.reference_size_y
                         orig_sz_x = self.reference_size_x
@@ -1949,7 +1983,7 @@ class DensoViewerApp(QMainWindow):
                     # Insert Sparkline 2D
                     spark = SparklineWidget(raw_matrix, raw_min, raw_max, self.sparkline_style)
                     self.table.setCellWidget(0, size_x, spark)
-                if cmp_idx > 4 and matrix_orig is not None:
+                if cmp_idx in (5, 6, 8) and matrix_orig is not None:
                     is_3d = (current_type == '3d' or (current_type == 'tags' and self.hex_plot_mode == '3d'))
                     if cmp_idx == 6 and hasattr(self, "reference_matrix"):
                         orig_sz_y = self.reference_size_y
@@ -1989,7 +2023,7 @@ class DensoViewerApp(QMainWindow):
 
                 self.table.resizeColumnsToContents()
                 self.table.setColumnWidth(size_x, 150)
-                if cmp_idx > 4 and matrix_orig is not None:
+                if cmp_idx in (5, 6, 8) and matrix_orig is not None:
                     self.table_orig.resizeColumnsToContents()
                 self.is_updating_table = False
 
@@ -2150,6 +2184,32 @@ class DensoViewerApp(QMainWindow):
                     self.sync_listbox_selection()
             
             self.update_hex_view()
+
+    def export_modified_bin(self):
+        self.data_manager._ensure_bin_loaded()
+        if not self.data_manager._modified_bin_data:
+            QMessageBox.warning(self, "Export Failed", "No modifications have been done yet.")
+            return
+            
+        file_path, _ = QFileDialog.getSaveFileName(self, "Export Modified Bin", "", "Binary Files (*.bin);;All Files (*)")
+        if file_path:
+            try:
+                with open(file_path, "wb") as f:
+                    f.write(self.data_manager._modified_bin_data)
+                QMessageBox.information(self, "Success", f"Successfully exported modified bin to:\n{file_path}")
+            except Exception as e:
+                QMessageBox.critical(self, "Error", f"Failed to export bin:\n{e}")
+
+    def load_reference_bin(self):
+        file_path, _ = QFileDialog.getOpenFileName(self, "Select Reference Bin", "", "Binary Files (*.bin);;All Files (*)")
+        if file_path:
+            try:
+                with open(file_path, "rb") as f:
+                    self.data_manager._reference_bin_data = f.read()
+                QMessageBox.information(self, "Success", f"Successfully loaded external reference bin:\n{os.path.basename(file_path)}")
+                self.draw_map()
+            except Exception as e:
+                QMessageBox.critical(self, "Error", f"Failed to load reference bin:\n{e}")
 
     def save_project(self):
         path, _ = QFileDialog.getSaveFileName(self, "Save Project", "", "Denso Project (*.dproj *.json)")

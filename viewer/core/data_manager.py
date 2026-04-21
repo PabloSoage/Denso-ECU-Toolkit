@@ -27,6 +27,7 @@ class DataManager:
         self._bin_data_cache = b""
         self._modified_bin_data = bytearray()
         self._cached_bin_path = ""
+        self._reference_bin_data = b""
 
     def _ensure_bin_loaded(self):
         if self.bin_path != self._cached_bin_path or not self._bin_data_cache:
