@@ -11,7 +11,9 @@ class DataManager:
         self.bin_path = ""
         self.csv_3d_path = ""
         self.csv_2d_path = ""
+        self.csv_dtc_path = "2d_and_3D_maps_DTC_Mapped.csv"
         
+        self.dtc_data = {}  # { "Wrapper_Addr": { "RAM": ..., "Func": ... } }
         self.tags = {}  # { hex_address: {"tags": ["Tag1", ...], "length": int} }
         self.hexdump_tags = {}  # { hex_address: {"tags": ["Tag1", ...], "length": int, "chunks": [...]} }
         self.z_format_3d = '>H'
@@ -340,11 +342,31 @@ class DataManager:
         except:
             return "??"
 
+    def load_dtc_csv(self):
+        self.dtc_data = {}
+        if not self.csv_dtc_path or not os.path.exists(self.csv_dtc_path):
+            return False, "DTC CSV not found."
+        
+        try:
+            df_dtc = pd.read_csv(self.csv_dtc_path, dtype=str)
+            for _, row in df_dtc.iterrows():
+                wrapper = str(row.get('Wrapper_Addr', '')).strip().upper()
+                if wrapper:
+                    self.dtc_data[wrapper] = {
+                        'map_data_addr': str(row.get('Map_Data_Addr', '')).strip().upper(),
+                        'ram_var': str(row.get('Target_RAM_Var', '')).strip().upper(),
+                        'dtc_func': str(row.get('Potential_DTC_Func', '')).strip()
+                    }
+            return True, ""
+        except Exception as e:
+            return False, str(e)
+
     def save_project(self, file_path):
         data = {
             "bin_path": self.bin_path,
             "csv_3d_path": self.csv_3d_path,
             "csv_2d_path": self.csv_2d_path,
+            "csv_dtc_path": self.csv_dtc_path,
             "tags": self.tags,
             "hexdump_tags": self.hexdump_tags,
             "z_format_3d": self.z_format_3d,
@@ -370,6 +392,7 @@ class DataManager:
             self.bin_path = data.get("bin_path", "")
             self.csv_3d_path = data.get("csv_3d_path", "")
             self.csv_2d_path = data.get("csv_2d_path", "")
+            self.csv_dtc_path = data.get("csv_dtc_path", "2d_and_3D_maps_DTC_Mapped.csv")
             old_tags = data.get("tags", {})
             self.tags = {}
             for k, v in old_tags.items():

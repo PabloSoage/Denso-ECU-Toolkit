@@ -19,6 +19,9 @@ class MapRenderer:
             wrapper_addr_hex = str(row['Wrapper_Addr']).strip()
             custom = getattr(self.main_window.data_manager, "custom_map_settings", {}).get(wrapper_addr_hex, {})
 
+            has_dtc = wrapper_addr_hex in getattr(self.main_window.data_manager, 'dtc_data', {})
+            self.main_window.btn_dtc_info.setVisible(has_dtc)
+
             current_type = row.get('Map_Type', self.main_window.map_mode)
 
             # Update toggle button visibility dynamically for 'All' mode

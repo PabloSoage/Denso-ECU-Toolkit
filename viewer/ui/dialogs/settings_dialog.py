@@ -88,6 +88,7 @@ class SettingsDialog(QDialog):
         le_bin = add_file_row(vbox_f, "BIN File:", self.main_window.data_manager.bin_path)
         le_3d = add_file_row(vbox_f, "3D CSV:", self.main_window.data_manager.csv_3d_path)
         le_2d = add_file_row(vbox_f, "2D CSV:", self.main_window.data_manager.csv_2d_path)
+        le_dtc = add_file_row(vbox_f, "DTC CSV:", getattr(self.main_window.data_manager, 'csv_dtc_path', ''))
         vbox_f.addStretch()
         tabs.addTab(tab_files, "Files & Mode")
         
@@ -269,7 +270,11 @@ class SettingsDialog(QDialog):
             if engine_changed:
                 self.main_window.render_engine = new_engine
 
-            self.main_window.data_manager.bin_path = le_bin.text(); self.main_window.data_manager.csv_3d_path = le_3d.text(); self.main_window.data_manager.csv_2d_path = le_2d.text()
+            self.main_window.data_manager.bin_path = le_bin.text()
+            self.main_window.data_manager.csv_3d_path = le_3d.text()
+            self.main_window.data_manager.csv_2d_path = le_2d.text()
+            self.main_window.data_manager.csv_dtc_path = le_dtc.text()
+            self.main_window.data_manager.load_dtc_csv()
             
             if rb_m4.isChecked():
                 self.main_window.cmb_map_type.setVisible(True)

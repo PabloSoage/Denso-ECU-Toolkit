@@ -131,6 +131,7 @@ class DensoViewerApp(QMainWindow):
         
         
         self.init_ui()
+        self.data_manager.load_dtc_csv()
         self.load_data()
         
         QApplication.instance().installEventFilter(self)
@@ -1000,6 +1001,16 @@ class DensoViewerApp(QMainWindow):
                 self.load_data()
                 self.update_list()
                 self.sync_listbox_selection()
+                self.data_manager.load_dtc_csv()
                 QMessageBox.information(self, "Success", "Project loaded successfully.")
             else:
                 QMessageBox.critical(self, "Error", f"Could not load project:\n{err}")
+
+    def show_dtc_tracker(self):
+        from ui.dialogs.dtc_tracker_dialog import DtcTrackerDialog
+        row = self.data_manager.df.iloc[self.data_manager.current_index]
+        wrapper_addr_hex = str(row.get('Wrapper_Addr', '')).strip()
+        dtc_info = self.data_manager.dtc_data.get(wrapper_addr_hex)
+        if dtc_info:
+            dlg = DtcTrackerDialog(dtc_info, self)
+            dlg.exec()
