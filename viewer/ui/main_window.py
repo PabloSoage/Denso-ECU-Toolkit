@@ -48,6 +48,12 @@ class DensoViewerApp(QMainWindow):
         self.data_manager = DataManager()
         self.map_renderer = MapRenderer(self)
         
+        from ui.managers.map_list_manager import MapListManager
+        from ui.managers.mouse_events_manager import MouseEventsManager
+        
+        self.map_list_manager = MapListManager(self)
+        self.mouse_events_manager = MouseEventsManager(self)
+        
         self.setWindowTitle("Denso Map Viewer")
         self.resize(1400, 850)
         
@@ -261,118 +267,19 @@ class DensoViewerApp(QMainWindow):
 
     # --- UI LOGIC ---
     def update_tag_filter_menu(self):
-        if not hasattr(self, 'tag_filter_menu'): return
-        self.tag_filter_menu.clear()
-        all_tags = set()
-        
-        if not self.data_manager.df.empty and 'Tag' in self.data_manager.df.columns:
-            for tag_str in self.data_manager.df['Tag'].fillna(''):
-                for t in str(tag_str).split(','):
-                    t = t.strip()
-                    if t:
-                        all_tags.add(t)
-                
-        for t in sorted(all_tags):
-            action = self.tag_filter_menu.addAction(t)
-            action.setCheckable(True)
-            action.setChecked(t in self.active_tag_filters)
-            action.triggered.connect(lambda checked, tag=t: self.on_tag_filter_toggled(tag, checked))
+        self.map_list_manager.update_tag_filter_menu()
 
     def on_tag_filter_toggled(self, tag, checked):
-        if checked:
-            self.active_tag_filters.add(tag)
-        else:
-            self.active_tag_filters.discard(tag)
-        self.update_list()
+        self.map_list_manager.on_tag_filter_toggled(tag, checked)
 
     def on_map_type_changed(self, idx):
-        if idx == 0: new_mode = '3d'
-        elif idx == 1: new_mode = '2d'
-        elif idx == 2: new_mode = 'tags'
-        else: new_mode = 'all'
-        
-        if new_mode != self.map_mode:
-            self.map_mode = new_mode
-            if self.btn_main_mode.text() == "Mode: Map Viewer":
-                self.btn_hex_plot_mode.setVisible(self.map_mode == 'tags')
-            self.btn_edit_dims.setVisible(self.map_mode in ('tags', 'all'))
-            self.load_data()
+        self.map_list_manager.on_map_type_changed(idx)
 
     def update_list(self):
-        self.map_listbox.clear()
-        self.filtered_indices = []
-        if self.data_manager.df.empty: return
-        
-        search_term = self.search_box.text().lower()
-        
-        for idx, row in self.data_manager.df.iterrows():
-            mtype = row.get('Map_Type', self.map_mode)
-            
-            # For 3D and Hexdump Tags, use Map_Z_Addr as the title. For 2D, Curve_Data_Addr
-            addr_col = 'Map_Z_Addr' if mtype in ('3d', 'tags') else 'Curve_Data_Addr'
-            addr = str(row.get(addr_col, '')).strip()
-            tag = str(row.get('Tag', '')).strip()
-
-            # Beautiful label indicating type
-            prefix = {"3d": "3D Map", "2d": "2D Crv", "tags": "HexTag"}.get(mtype, "Map")
-            
-            display_text = f"{prefix} {idx+1}: {addr}"
-            if tag:
-                display_text += f" [{tag}]"
-
-            term_match = (search_term in addr.lower() or search_term in tag.lower())
-            
-            tag_match = True
-            if self.active_tag_filters:
-                row_tags = [t.strip() for t in tag.split(',') if t.strip()]
-                for f_tag in self.active_tag_filters:
-                    if f_tag not in row_tags:
-                        tag_match = False
-                        break
-                        
-            if term_match and tag_match:
-                item = QListWidgetItem(display_text)
-                
-                # Check for modifications
-                try:
-                    is_modified = False
-                    if mtype == '3d':
-                        sz_h_row = str(row.get('Wrapper_Addr', '')).strip()
-                        cst = self.data_manager.custom_map_settings.get(sz_h_row, {})
-                        fmt = cst.get('z_format', self.data_manager.z_format_3d)
-                        fc = fmt[-1]
-                        bpv = 4 if fc.lower() in ('f','i','l') else (2 if fc.lower() == 'h' else 1)
-                        sx, sy = int(row.get('Size_X', 1)), int(row.get('Size_Y', 1))
-                        addr_int = int(str(row.get('Map_Z_Addr', '0')).strip(), 16)
-                        length = sx * sy * bpv
-                        is_modified = self.data_manager.is_map_modified(addr_int, length)
-                    elif mtype == '2d':
-                        sz_h_row = str(row.get('Wrapper_Addr', '')).strip()
-                        cst = self.data_manager.custom_map_settings.get(sz_h_row, {})
-                        fmt = cst.get('z_format', self.data_manager.z_format_2d)
-                        fc = fmt[-1]
-                        bpv = 4 if fc.lower() in ('f','i','l') else (2 if fc.lower() == 'h' else 1)
-                        sx = int(row.get('Size_X', 1))
-                        addr_int = int(str(row.get('Curve_Data_Addr', '0')).strip(), 16)
-                        length = sx * bpv
-                        is_modified = self.data_manager.is_map_modified(addr_int, length)
-                    if is_modified:
-                        item.setForeground(QColor(255, 0, 0))
-                except: pass
-                
-                self.map_listbox.addItem(item)
-                self.filtered_indices.append(idx)
-
-        if self.filtered_indices:
-            self.sync_listbox_selection()
+        self.map_list_manager.update_list()
 
     def on_list_select(self):
-        items = self.map_listbox.selectedIndexes()
-        if items:
-            visual_idx = items[0].row()
-            if visual_idx < len(self.filtered_indices):
-                self.data_manager.current_index = self.filtered_indices[visual_idx]
-                self.draw_map()
+        self.map_list_manager.on_list_select()
 
     def prev_map(self):
         if self.data_manager.current_index > 0:
@@ -420,12 +327,7 @@ class DensoViewerApp(QMainWindow):
             QMessageBox.warning(self, "Error", f"Failed to set reference: {str(e)}")
 
     def sync_listbox_selection(self):
-        if self.data_manager.current_index in self.filtered_indices:
-            vis_idx = self.filtered_indices.index(self.data_manager.current_index)
-            # Block signals temporarily to prevent triggering on_list_select
-            self.map_listbox.blockSignals(True)
-            self.map_listbox.setCurrentRow(vis_idx)
-            self.map_listbox.blockSignals(False)
+        self.map_list_manager.sync_listbox_selection()
 
     def toggle_main_mode(self):
         modes = ['Map Viewer', 'Hex Dump']
@@ -563,179 +465,20 @@ class DensoViewerApp(QMainWindow):
 
     # --- 3D & 2D ZOOM LOGIC ---
     def apply_3d_zoom(self):
-        if not hasattr(self, 'map_size_x'): return
-        
-        base_x = max(1, self.map_size_x - 1) * 1.15
-        base_y = max(1, self.map_size_y - 1) * 1.15
-        
-        x_range = base_x / self.cam_zoom
-        y_range = base_y / self.cam_zoom
-        
-        min_c_x = x_range / 2
-        max_c_x = (self.map_size_x - 1) - x_range / 2
-        self.center_x = (self.map_size_x - 1) / 2.0 if min_c_x > max_c_x else max(min_c_x, min(self.center_x, max_c_x))
-            
-        min_c_y = y_range / 2
-        max_c_y = (self.map_size_y - 1) - y_range / 2
-        self.center_y = (self.map_size_y - 1) / 2.0 if min_c_y > max_c_y else max(min_c_y, min(self.center_y, max_c_y))
-            
-        self.ax.set_xlim(self.center_x - x_range/2, self.center_x + x_range/2)
-        self.ax.set_ylim(self.center_y + y_range/2, self.center_y - y_range/2)
-        
-        if self.z_min == self.z_max: self.ax.set_zlim(self.z_min - 1, self.z_max + 1)
-        else: self.ax.set_zlim(self.z_min, self.z_max)
-            
-        if hasattr(self, 'ax2'):
-            self.ax2.set_xlim(self.center_x - x_range/2, self.center_x + x_range/2)
-            self.ax2.set_ylim(self.center_y + y_range/2, self.center_y - y_range/2)
-            
-            z_orig_min = getattr(self, 'z_orig_min', self.z_min)
-            z_orig_max = getattr(self, 'z_orig_max', self.z_max)
-            
-            if z_orig_min == z_orig_max: self.ax2.set_zlim(z_orig_min - 1, z_orig_max + 1)
-            else: self.ax2.set_zlim(z_orig_min, z_orig_max)
-            self.ax2.set_autoscale_on(False)
+        self.mouse_events_manager.apply_3d_zoom()
 
     def apply_2d_zoom(self):
-        x_range = (self.abs_xlim[1] - self.abs_xlim[0]) / self.cam_zoom_2d
-        y_range = (self.abs_ylim[1] - self.abs_ylim[0]) / self.cam_zoom_2d
-        
-        min_cx = self.abs_xlim[0] + x_range/2
-        max_cx = self.abs_xlim[1] - x_range/2
-        self.center_x_2d = max(min_cx, min(self.center_x_2d, max_cx))
-        
-        min_cy = self.abs_ylim[0] + y_range/2
-        max_cy = self.abs_ylim[1] - y_range/2
-        self.center_y_2d = max(min_cy, min(self.center_y_2d, max_cy))
-        
-        self.ax.set_xlim(self.center_x_2d - x_range/2, self.center_x_2d + x_range/2)
-        self.ax.set_ylim(self.center_y_2d - y_range/2, self.center_y_2d + y_range/2)
-        self.ax.set_autoscale_on(False)
-        self.canvas.draw_idle()
+        self.mouse_events_manager.apply_2d_zoom()
 
     # --- MATPLOTLIB EVENTS (HOVER & ROTATION) ---
     def on_mouse_press(self, event):
-        if event.button == 1: 
-            self.dragging = True
-            self.mouse_x = event.x
-            self.mouse_y = event.y
-            
-            if getattr(self.ax, "name", "") == "3d" or getattr(self.ax, "name", "") == "3d":
-                self.start_elev = self.ax.elev
-                self.start_azim = self.ax.azim
-            else:
-                self.start_center_x_2d = self.center_x_2d
-                self.start_center_y_2d = self.center_y_2d
+        self.mouse_events_manager.on_mouse_press(event)
 
     def on_mouse_release(self, event):
-        self.dragging = False
-        if getattr(self.ax, "name", "") == "3d" or getattr(self.ax, "name", "") == "3d":
-            self.start_elev = self.ax.elev
-            self.start_azim = self.ax.azim
+        self.mouse_events_manager.on_mouse_release(event)
 
     def on_mouse_move(self, event):
-        if self.data_manager.df.empty and self.btn_main_mode.text() != "Mode: Hex Dump": return
-        
-        if self.dragging:
-            if event.x is None or event.y is None: return
-            
-            if getattr(self.ax, "name", "") == "3d" or getattr(self.ax, "name", "") == "3d":
-                dx = event.x - self.mouse_x
-                dy = event.y - self.mouse_y
-                sens = 0.4
-                new_elev = self.start_elev
-                new_azim = self.start_azim
-                
-                if self.rot_mode == 'WinOLS':
-                    new_elev = max(-90, min(90, self.start_elev - (dy * sens)))
-                    new_azim = self.start_azim - (dx * sens)
-                elif self.rot_mode == 'Z':
-                    new_azim = self.start_azim - (dx * sens)
-                elif self.rot_mode == 'Tilt':
-                    new_elev = max(-90, min(90, self.start_elev - (dy * sens)))
-                    
-                self.ax.view_init(elev=new_elev, azim=new_azim)
-                self._sync_3d_axes()
-                self.canvas.draw_idle()
-            
-            else:
-                dx_pixels = event.x - self.mouse_x
-                dy_pixels = event.y - self.mouse_y
-                
-                inv = self.ax.transData.inverted()
-                x0, y0 = inv.transform((0, 0))
-                x1, y1 = inv.transform((1, 1))
-                
-                data_dx_per_pixel = x1 - x0
-                data_dy_per_pixel = y1 - y0
-                
-                self.center_x_2d = self.start_center_x_2d - (dx_pixels * data_dx_per_pixel)
-                self.center_y_2d = self.start_center_y_2d - (dy_pixels * data_dy_per_pixel)
-                
-                self.apply_2d_zoom()
-            return
-            
-        else:
-            self.mouse_x_data = event.xdata
-            self.mouse_y_data = event.ydata
-            
-        if getattr(event, 'inaxes', None) != self.ax or len(self.z_flat) == 0:
-            self.is_hovering = False
-            if hasattr(self, 'cursor_marker') and self.cursor_marker.get_visible():
-                self.cursor_marker.set_visible(False)
-                self.status_lbl.setText("Hover over the graph to see values...")
-                self.canvas.draw_idle()
-            return
-
-        try:
-            is_3d = getattr(self.ax, 'name', '') == '3d'
-            if is_3d:
-                xs, ys, _ = proj3d.proj_transform(self.x_flat, self.y_flat, self.z_flat, self.ax.get_proj())
-                points2d = self.ax.transData.transform(np.column_stack([xs, ys]))
-            else:
-                points2d = self.ax.transData.transform(np.column_stack([self.x_flat, self.z_flat]))
-
-            dists = (points2d[:, 0] - event.x)**2 + (points2d[:, 1] - event.y)**2
-            min_idx = np.argmin(dists)
-            
-            if dists[min_idx] < 600: 
-                self.is_hovering = True
-                
-                if (self.map_mode == '3d' or (self.map_mode == 'tags' and self.hex_plot_mode == '3d')) or (self.btn_main_mode.text() == "Mode: Hex Dump" and self.hex_plot_mode == '3d'):
-                    self.hover_x = self.x_flat[min_idx]
-                    self.hover_y = self.y_flat[min_idx]
-                    best_z = self.z_flat[min_idx]
-                    self.cursor_marker.set_data([self.hover_x], [self.hover_y])
-                    self.cursor_marker.set_3d_properties([best_z])
-                    rx = self.real_axis_x[self.hover_x]
-                    ry = self.real_axis_y[self.hover_y]
-                    
-                    if self.display_hex:
-                        v_hex = best_z if self.apply_factor_to_hex else self.raw_flat[min_idx]
-                        fmt = self.data_manager.z_format_3d
-                        lbl = f"Target: X = {rx:g}   |   Y = {ry:g}   |   Z (HEX) = {self.data_manager.val_to_hex(v_hex, fmt[-1], fmt[0])}"
-                    else:
-                        lbl = f"Target: X = {rx:g}   |   Y = {ry:g}   |   Z = {best_z:.2f}"
-                else:
-                    best_x = self.x_flat[min_idx]
-                    best_z = self.z_flat[min_idx]
-                    self.cursor_marker.set_data([best_x], [best_z])
-                    if self.display_hex:
-                        v_hex = best_z if self.apply_factor_to_hex else self.raw_flat[min_idx]
-                        fmt = self.data_manager.z_format_2d
-                        lbl = f"Target: X = {best_x:g}   |   Z (HEX) = {self.data_manager.val_to_hex(v_hex, fmt[-1], fmt[0])}"
-                    else:
-                        lbl = f"Target: X = {best_x:g}   |   Z (Curve) = {best_z:.2f}"
-
-                self.cursor_marker.set_visible(True)
-                self.status_lbl.setText(lbl)
-                self.canvas.draw_idle()
-            else:
-                self.is_hovering = False
-                self.cursor_marker.set_visible(False)
-                self.status_lbl.setText("Hover over the graph to see values...")
-                self.canvas.draw_idle()
-        except: pass
+        self.mouse_events_manager.on_mouse_move(event)
 
     def on_hex_selection_changed(self, current, previous):
         if not current.isValid(): return

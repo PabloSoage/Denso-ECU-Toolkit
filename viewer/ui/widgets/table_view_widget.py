@@ -20,10 +20,22 @@ class TableViewWidget(QStackedWidget):
         self.table_split.addWidget(self.main_window.table_orig)
         self.addWidget(self.table_split)
         
-        self.main_window.table.verticalScrollBar().valueChanged.connect(self.main_window.table_orig.verticalScrollBar().setValue)
-        self.main_window.table_orig.verticalScrollBar().valueChanged.connect(self.main_window.table.verticalScrollBar().setValue)
-        self.main_window.table.horizontalScrollBar().valueChanged.connect(self.main_window.table_orig.horizontalScrollBar().setValue)
-        self.main_window.table_orig.horizontalScrollBar().valueChanged.connect(self.main_window.table.horizontalScrollBar().setValue)
+        def sync_scroll(target_scrollbar):
+            return lambda val: target_scrollbar.setValue(val) if target_scrollbar.value() != val else None
+
+        self.main_window.table.verticalScrollBar().valueChanged.connect(
+            sync_scroll(self.main_window.table_orig.verticalScrollBar())
+        )
+        self.main_window.table_orig.verticalScrollBar().valueChanged.connect(
+            sync_scroll(self.main_window.table.verticalScrollBar())
+        )
+        self.main_window.table.horizontalScrollBar().valueChanged.connect(
+            sync_scroll(self.main_window.table_orig.horizontalScrollBar())
+        )
+        self.main_window.table_orig.horizontalScrollBar().valueChanged.connect(
+            sync_scroll(self.main_window.table.horizontalScrollBar())
+        )
+        # -----------------------------------------------------------------
 
         # Hex Table
         self.main_window.hex_table = QTableView()
