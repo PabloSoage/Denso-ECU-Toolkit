@@ -12,7 +12,7 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QHBoxLayout, QV
                              QTableWidget, QTableWidgetItem, QGroupBox, QRadioButton,
                              QFormLayout, QDialog, QDialogButtonBox, QDoubleSpinBox,
                              QTabWidget, QFileDialog, QMessageBox, QCheckBox, QTableView, QComboBox, QComboBox,
-                             QStyledItemDelegate, QInputDialog, QSplitter, QMenu, QAbstractItemView)
+                             QStyledItemDelegate, QInputDialog, QSplitter, QMenu, QAbstractItemView, QSpinBox)
 from PyQt6.QtCore import Qt, QEvent, QPointF, QRectF, QAbstractTableModel, QModelIndex, QVariant
 from PyQt6.QtGui import QAction, QPainter, QColor, QPolygonF, QBrush, QFont, QKeySequence, QShortcut
 
@@ -108,6 +108,7 @@ class DensoViewerApp(QMainWindow):
         self.highlight_3d = True
         self.highlight_2d = True
         self.highlight_custom_tags = True
+        self.hex_row_width = 16
         self.active_tag_filters = set()
         self.hex_plot_visible = True
         self.hex_plot_mode = '3d'
@@ -171,7 +172,7 @@ class DensoViewerApp(QMainWindow):
                     return True 
         return super().eventFilter(obj, event)
 
-    def load_data(self):
+    def load_data(self, auto_scroll=True):
                                 
         success, msg = self.data_manager.load_csv(self.map_mode)
         
@@ -186,7 +187,7 @@ class DensoViewerApp(QMainWindow):
         self.update_tag_filter_menu()
         self.update_list()
         self.rebuild_plot_axes()
-        self.draw_map()
+        self.draw_map(auto_scroll=auto_scroll)
 
     def _sync_3d_axes(self, *args, **kwargs):
         if not hasattr(self, 'ax') or not hasattr(self, 'ax2'): return
@@ -292,6 +293,11 @@ class DensoViewerApp(QMainWindow):
         self.btn_edit_tags.setMenu(self.edit_tags_menu)
         hbox_tags.addWidget(self.btn_edit_tags)
         
+        self.btn_edit_dims = QPushButton("Edit Dimensions")
+        self.btn_edit_dims.clicked.connect(self.edit_current_tag_dimensions)
+        self.btn_edit_dims.setVisible(False)
+        hbox_tags.addWidget(self.btn_edit_dims)
+        
         left_panel.addLayout(hbox_tags)
         
         hbox_proj = QHBoxLayout()
@@ -348,6 +354,14 @@ class DensoViewerApp(QMainWindow):
         self.btn_set_ref = QPushButton("Set Reference Map")
         self.btn_set_ref.setToolTip("Set current map as Reference for comparison")
         self.btn_set_ref.clicked.connect(self.set_reference_map)
+
+        self.spin_hex_cols = QSpinBox()
+        self.spin_hex_cols.setRange(1, 256)
+        self.spin_hex_cols.setValue(16)
+        self.spin_hex_cols.setPrefix("Cols: ")
+        self.spin_hex_cols.setVisible(False)
+        self.spin_hex_cols.valueChanged.connect(self.on_hex_cols_changed)
+        toolbar_layout.addWidget(self.spin_hex_cols)
 
         self.btn_hex = QPushButton("Dec / Hex")
         self.btn_hex.clicked.connect(self.toggle_hex)
@@ -510,6 +524,7 @@ class DensoViewerApp(QMainWindow):
             self.map_mode = new_mode
             if self.btn_main_mode.text() == "Mode: Map Viewer":
                 self.btn_hex_plot_mode.setVisible(self.map_mode == 'tags')
+            self.btn_edit_dims.setVisible(self.map_mode in ('tags', 'all'))
             self.load_data()
 
     def update_list(self):
@@ -636,7 +651,10 @@ class DensoViewerApp(QMainWindow):
     def sync_listbox_selection(self):
         if self.data_manager.current_index in self.filtered_indices:
             vis_idx = self.filtered_indices.index(self.data_manager.current_index)
+            # Block signals temporarily to prevent triggering on_list_select
+            self.map_listbox.blockSignals(True)
             self.map_listbox.setCurrentRow(vis_idx)
+            self.map_listbox.blockSignals(False)
 
     def toggle_main_mode(self):
         modes = ['Map Viewer', 'Hex Dump']
@@ -651,6 +669,7 @@ class DensoViewerApp(QMainWindow):
             self.btn_toggle.setVisible(True)
             self.btn_hex_plot_toggle.setVisible(False)
             self.btn_hex_plot_mode.setVisible(self.map_mode == 'tags')
+            self.spin_hex_cols.setVisible(False)
             
             # Reset splitter order for map viewer
             self.stacked_widget.setOrientation(Qt.Orientation.Vertical)
@@ -677,6 +696,7 @@ class DensoViewerApp(QMainWindow):
             self.btn_hex.setVisible(False)
             self.btn_hex_plot_toggle.setVisible(True)
             self.btn_hex_plot_mode.setVisible(self.hex_plot_visible)
+            self.spin_hex_cols.setVisible(True)
             
             # Hex Dump mode
             self.plot_container.setVisible(self.hex_plot_visible)
@@ -685,6 +705,11 @@ class DensoViewerApp(QMainWindow):
             self.apply_splitter_position()
             
         self.draw_map()
+
+    def on_hex_cols_changed(self, val):
+        self.hex_row_width = val
+        if self.btn_main_mode.text() == "Mode: Hex Dump":
+            self.update_hex_view()
 
     def toggle_hex_plot(self):
         self.hex_plot_visible = not self.hex_plot_visible
@@ -797,10 +822,13 @@ class DensoViewerApp(QMainWindow):
         frame = QGroupBox("Custom Settings")
         ly_frame = QFormLayout(frame)
         
-        glob_z = self.data_manager.z_format_3d if (self.map_mode == '3d' or (self.map_mode == 'tags' and self.hex_plot_mode == '3d')) else self.data_manager.z_format_2d
+        current_type = row.get('Map_Type', self.map_mode)
+        is_3d = (current_type == '3d' or (current_type == 'tags' and self.hex_plot_mode == '3d'))
+        
+        glob_z = self.data_manager.z_format_3d if is_3d else self.data_manager.z_format_2d
         glob_ax = self.data_manager.ax_format
-        glob_f = self.factor_z_3d if (self.map_mode == '3d' or (self.map_mode == 'tags' and self.hex_plot_mode == '3d')) else self.factor_z_2d
-        glob_o = self.offset_z_3d if (self.map_mode == '3d' or (self.map_mode == 'tags' and self.hex_plot_mode == '3d')) else self.offset_z_2d
+        glob_f = self.factor_z_3d if is_3d else self.factor_z_2d
+        glob_o = self.offset_z_3d if is_3d else self.offset_z_2d
 
         z_fmt = custom.get('z_format', glob_z)
         ax_fmt = custom.get('ax_format', glob_ax)
@@ -1310,7 +1338,8 @@ class DensoViewerApp(QMainWindow):
             return
 
         try:
-            if (self.map_mode == '3d' or (self.map_mode == 'tags' and self.hex_plot_mode == '3d')) or (self.btn_main_mode.text() == "Mode: Hex Dump" and self.hex_plot_mode == '3d'):
+            is_3d = getattr(self.ax, 'name', '') == '3d'
+            if is_3d:
                 xs, ys, _ = proj3d.proj_transform(self.x_flat, self.y_flat, self.z_flat, self.ax.get_proj())
                 points2d = self.ax.transData.transform(np.column_stack([xs, ys]))
             else:
@@ -1366,7 +1395,7 @@ class DensoViewerApp(QMainWindow):
             return
             
         bpc = self.hex_table_model.bytes_per_col
-        addr = current.row() * 16 + current.column() * bpc
+        addr = current.row() * self.hex_row_width + current.column() * bpc
         self.status_lbl.setText(f"Hex Cursor: {addr:08X}  ({addr})")
 
     def goto_hex_address(self):
@@ -1377,8 +1406,8 @@ class DensoViewerApp(QMainWindow):
                 addr = int(addr_str.replace('0x', ''), 16)
                 if not hasattr(self, 'hex_table_model'): return
                 bpc = self.hex_table_model.bytes_per_col
-                row = addr // 16
-                col = (addr % 16) // bpc
+                row = addr // self.hex_row_width
+                col = (addr % self.hex_row_width) // bpc
                 idx = self.hex_table_model.index(row, col)
                 self.hex_table.scrollTo(idx, QTableView.ScrollHint.PositionAtTop)
                 self.hex_table.setCurrentIndex(idx)
@@ -1438,7 +1467,7 @@ class DensoViewerApp(QMainWindow):
         
         for r in range(size_y):
             for c in range(size_x):
-                addr = (start_row + r) * 16 + (start_col + c) * bpc
+                addr = (start_row + r) * self.hex_row_width + (start_col + c) * bpc
                 if addr + bpc <= len(self.data_manager.bin_data):
                     val_bytes = self.data_manager.bin_data[addr:addr+bpc]
                     try:
@@ -1506,7 +1535,7 @@ class DensoViewerApp(QMainWindow):
         self.cursor_marker.set_visible(False)
         self.canvas.draw_idle()
 
-    def update_hex_view(self):
+    def update_hex_view(self, auto_scroll=True):
         self.data_manager.build_color_map(
             highlight_3d=self.highlight_3d, 
             highlight_2d=self.highlight_2d, 
@@ -1527,25 +1556,25 @@ class DensoViewerApp(QMainWindow):
         fmt = self.data_manager.z_format_3d if (self.map_mode == '3d' or (self.map_mode == 'tags' and self.hex_plot_mode == '3d')) else self.data_manager.z_format_2d
         
         if not hasattr(self, 'hex_table_model'):
-            self.hex_table_model = HexTableModel(self.data_manager.bin_data, self.data_manager.map_array, self.data_manager.map_dicts, fmt, self.sparkline_style)
+            self.hex_table_model = HexTableModel(self.data_manager.bin_data, self.data_manager.map_array, self.data_manager.map_dicts, fmt, self.sparkline_style, getattr(self, 'hex_row_width', 16))
             self.hex_table.setModel(self.hex_table_model)
             self.hex_table.setFont(QFont("Courier New", 10))
             self.hex_table.selectionModel().currentChanged.connect(self.on_hex_selection_changed)
             self.hex_table.selectionModel().selectionChanged.connect(self.update_hex_plot)
         else:
-            self.hex_table_model.update_settings(self.data_manager.bin_data, self.data_manager.map_array, self.data_manager.map_dicts, fmt, self.sparkline_style)
+            self.hex_table_model.update_settings(self.data_manager.bin_data, self.data_manager.map_array, self.data_manager.map_dicts, fmt, self.sparkline_style, getattr(self, 'hex_row_width', 16))
             
         bpc = self.hex_table_model.bytes_per_col
         for i in range(self.hex_table_model.data_cols):
             self.hex_table.setColumnWidth(i, 35 if bpc == 1 else (55 if bpc == 2 else 95))
         self.hex_table.setColumnWidth(self.hex_table_model.data_cols, 150)
             
-        if not self.data_manager.df.empty:
+        if auto_scroll and not self.data_manager.df.empty:
             addr_col = 'Map_Z_Addr' if (self.map_mode == '3d' or (self.map_mode == 'tags' and self.hex_plot_mode == '3d')) else 'Curve_Data_Addr'
             curr_addr_hex = str(self.data_manager.df.iloc[self.data_manager.current_index].get(addr_col, '0')).strip()
             try:
                 addr_int = int(curr_addr_hex, 16)
-                idx = self.hex_table_model.index(addr_int // 16, (addr_int % 16) // bpc)
+                idx = self.hex_table_model.index(addr_int // self.hex_row_width, (addr_int % self.hex_row_width) // bpc)
                 self.hex_table.scrollTo(idx, QTableView.ScrollHint.PositionAtTop)
                 self.hex_table.setCurrentIndex(idx)
             except: pass
@@ -1594,10 +1623,10 @@ class DensoViewerApp(QMainWindow):
             QTimer = QtCore.QTimer
             QTimer.singleShot(0, self.draw_map)
 
-    def draw_map(self):
+    def draw_map(self, auto_scroll=True):
         if self.data_manager.df.empty:
             if self.btn_main_mode.text() == "Mode: Hex Dump":
-                self.update_hex_view()
+                self.update_hex_view(auto_scroll=auto_scroll)
             return
         try:
             row = self.data_manager.df.iloc[self.data_manager.current_index] 
@@ -1740,8 +1769,14 @@ class DensoViewerApp(QMainWindow):
             self.z_label_3d_str = f"Z Data [{m_tag}]" if m_tag else "Z Data"
             self.z_label_2d_str = f"Curve Data [{m_tag}]" if m_tag else "Curve Data"
 
-            if self.data_manager.current_map_addr != map_addr:
+            # Added a check to see if we have switched between 3D and 2D
+            needs_3d = (current_type == '3d' or (current_type == 'tags' and self.hex_plot_mode == '3d'))
+            dim_changed = getattr(self, '_last_dim_3d', None) != needs_3d
+
+            # Recalculate limits if the map orientation OR the plot dimensionality changes
+            if self.data_manager.current_map_addr != map_addr or dim_changed:
                 self.data_manager.current_map_addr = map_addr
+                self._last_dim_3d = needs_3d
                 
                 self.abs_center_x = (size_x - 1) / 2.0
                 self.abs_center_y = (size_y - 1) / 2.0
@@ -1758,13 +1793,24 @@ class DensoViewerApp(QMainWindow):
                 self.abs_ylim = (matrix_z.min() - y_margin, matrix_z.max() + y_margin)
                 self.center_x_2d = (self.abs_xlim[0] + self.abs_xlim[1]) / 2.0
                 self.center_y_2d = (self.abs_ylim[0] + self.abs_ylim[1]) / 2.0
+                self.cam_zoom_2d = 1.0 
+                
+                x_margin = (axis_x.max() - axis_x.min()) * 0.05
+                if x_margin == 0: x_margin = 1.0
+                y_margin = (matrix_z.max() - matrix_z.min()) * 0.05
+                if y_margin == 0: y_margin = 1.0
+                
+                self.abs_xlim = (axis_x.min() - x_margin, axis_x.max() + x_margin)
+                self.abs_ylim = (matrix_z.min() - y_margin, matrix_z.max() + y_margin)
+                self.center_x_2d = (self.abs_xlim[0] + self.abs_xlim[1]) / 2.0
+                self.center_y_2d = (self.abs_ylim[0] + self.abs_ylim[1]) / 2.0
                 self.cam_zoom_2d = 1.0
             
             title = f"Map {self.data_manager.current_index + 1}/{self.data_manager.total_maps} | Addr: {map_addr} | Z: {current_fmt} | Factor: {current_factor}"
             self.lbl_title.setText(title)
 
             if self.btn_main_mode.text() == "Mode: Hex Dump":
-                self.update_hex_view()
+                self.update_hex_view(auto_scroll=auto_scroll)
                 self.update_hex_plot()
             else:
                 if self.view_mode in ('plot', 'split'):
@@ -2048,10 +2094,16 @@ class DensoViewerApp(QMainWindow):
 
         bpc = self.hex_table_model.bytes_per_col
         if idx.column() == self.hex_table_model.data_cols: return
-        addr = idx.row() * 16 + idx.column() * bpc
+        addr = idx.row() * self.hex_row_width + idx.column() * bpc
 
         menu = QMenu(self)
         action_tag = menu.addAction("Tag Selection/Map...")
+        action_edit_dim = None
+        
+        # Only show Edit Dimensions if right-clicking an existing tag or a selection that might become one
+        # Let's show it if we are in tags mode or all mode
+        if self.map_mode in ('tags', 'all'):
+            action_edit_dim = menu.addAction("Edit Tag Dimensions (3D)...")
 
         action = menu.exec(self.hex_table.viewport().mapToGlobal(pos))
         if action == action_tag:
@@ -2061,7 +2113,7 @@ class DensoViewerApp(QMainWindow):
             addresses = []
             for ix in indexes:
                 if ix.column() < self.hex_table_model.data_cols:
-                    addresses.append(ix.row() * 16 + ix.column() * bpc)
+                    addresses.append(ix.row() * self.hex_row_width + ix.column() * bpc)
 
             chunks = []
             if addresses:
@@ -2131,23 +2183,110 @@ class DensoViewerApp(QMainWindow):
                 self.update_tag_filter_menu()
                 # Re-load the csv correctly to update dataframe for tags mode
                 if self.map_mode in ('tags', 'all'):
-                    self.load_data()
+                    self.load_data(auto_scroll=False)
                 else:
                     self.update_list()
                 
                 if hasattr(self.data_manager, 'current_map_addr') and self.data_manager.current_map_addr == base_addr_hex:
                     self.sync_listbox_selection()
                     
-                self.update_hex_view()
+                self.update_hex_view(auto_scroll=False)
+                self.draw_map(auto_scroll=False)
+
+        elif action_edit_dim and action == action_edit_dim:
+            indexes = self.hex_table.selectionModel().selectedIndexes()
+            if not indexes: return
+            
+            base_addr_hex = None
+            if len(indexes) <= 1:
+                mid = self.data_manager.map_array[addr] if addr < len(self.data_manager.map_array) else -1
+                if mid != -1:
+                    info = self.data_manager.map_dicts_tuples.get(mid, {})
+                    if info.get('color') == (255, 165, 0): # Custom tag check
+                        b_addr = info.get('addr')
+                        if b_addr is not None:
+                            base_addr_hex = f"{b_addr:08X}"
+                            
+            if not base_addr_hex:
+                # Use current index as base address if no tag selected
+                addr_tmp = indexes[0].row() * self.hex_row_width + indexes[0].column() * bpc
+                base_addr_hex = f"{addr_tmp:08X}"
+                
+            custom = self.data_manager.custom_map_settings.get(base_addr_hex, {})
+            current_sx = custom.get('Size_X', 16)
+            current_sy = custom.get('Size_Y', 1)
+            
+            val_x, ok1 = QInputDialog.getInt(self, "Edit Dimensions", "Size X (Columns):", int(current_sx), 1, 1000)
+            if ok1:
+                val_y, ok2 = QInputDialog.getInt(self, "Edit Dimensions", "Size Y (Rows):", int(current_sy), 1, 1000)
+                if ok2:
+                    if base_addr_hex not in self.data_manager.custom_map_settings:
+                        self.data_manager.custom_map_settings[base_addr_hex] = {}
+                    self.data_manager.custom_map_settings[base_addr_hex]['Size_X'] = val_x
+                    self.data_manager.custom_map_settings[base_addr_hex]['Size_Y'] = val_y
+                    
+                    if self.map_mode in ('tags', 'all'):
+                        self.load_data(auto_scroll=False)
+                    else:
+                        self.update_list()
+                    
+                    if hasattr(self.data_manager, 'current_map_addr') and self.data_manager.current_map_addr == base_addr_hex:
+                        self.sync_listbox_selection()
+                    self.update_hex_view(auto_scroll=False)
+                    self.draw_map(auto_scroll=False)
+
+    def edit_current_tag_dimensions(self):
+        if self.data_manager.df.empty: return
+        row = self.data_manager.df.iloc[self.data_manager.current_index]
+        if row.get('Map_Type', '') != 'tags':
+            QMessageBox.information(self, "Info", "Select a Tag to edit its dimensions.")
+            return
+            
+        base_addr_hex = str(row['Map_Z_Addr']).strip()
+        
+        custom = self.data_manager.custom_map_settings.get(base_addr_hex, {})
+        length = int(row.get('Tag_Length', 1))
+        
+        bpc = 1
+        fmt_char = custom.get('z_format', self.data_manager.z_format_3d)[-1]
+        if fmt_char == 'f': bpc = 4
+        elif fmt_char.lower() == 'h': bpc = 2
+        elif fmt_char.lower() in ('i', 'l'): bpc = 4
+        
+        num_elements = length // bpc
+        if num_elements == 0: num_elements = 1
+
+        current_sx = custom.get('Size_X', min(num_elements, 16))
+        current_sy = custom.get('Size_Y', max(1, num_elements // max(current_sx, 1)))
+
+        val_x, ok1 = QInputDialog.getInt(self, "Edit Dimensions", "Size X (Columns):", int(current_sx), 1, 1000)
+        if ok1:
+            val_y, ok2 = QInputDialog.getInt(self, "Edit Dimensions", "Size Y (Rows):", int(current_sy), 1, 1000)
+            if ok2:
+                if base_addr_hex not in self.data_manager.custom_map_settings:
+                    self.data_manager.custom_map_settings[base_addr_hex] = {}
+                self.data_manager.custom_map_settings[base_addr_hex]['Size_X'] = val_x
+                self.data_manager.custom_map_settings[base_addr_hex]['Size_Y'] = val_y
+                
+                # Apply changes to current dataframe
+                self.data_manager.df.loc[self.data_manager.current_index, 'Size_X'] = str(val_x)
+                self.data_manager.df.loc[self.data_manager.current_index, 'Size_Y'] = str(val_y)
+
+                self.update_list()
+                if hasattr(self.data_manager, 'current_map_addr') and self.data_manager.current_map_addr == base_addr_hex:
+                    self.sync_listbox_selection()
+                self.draw_map()
+
     def edit_specific_tag(self, target):
         if self.data_manager.df.empty: return
         row = self.data_manager.df.iloc[self.data_manager.current_index]        
+        current_type = row.get('Map_Type', self.map_mode)
         
         if target == 'wrapper':
             addr_col = 'Wrapper_Addr'
             title_prefix = "Map"
         elif target == 'z':
-            addr_col = 'Map_Z_Addr' if (self.map_mode == '3d' or (self.map_mode == 'tags' and self.hex_plot_mode == '3d')) else 'Curve_Data_Addr'
+            addr_col = 'Map_Z_Addr' if (current_type == '3d' or (current_type == 'tags' and self.hex_plot_mode == '3d')) else 'Curve_Data_Addr'
             title_prefix = "Z Data"
         elif target == 'x':
             addr_col = 'Axis_X_Addr'
@@ -2155,9 +2294,9 @@ class DensoViewerApp(QMainWindow):
         elif target == 'y':
             addr_col = 'Axis_Y_Addr'
             title_prefix = "Y Axis"
-            if self.map_mode != '3d': return
+            if current_type != '3d' and not (current_type == 'tags' and self.hex_plot_mode == '3d'): return
             
-        if addr_col not in row or not str(row[addr_col]).strip():
+        if addr_col not in row or pd.isna(row[addr_col]) or not str(row[addr_col]).strip():
             return
 
         addr = str(row[addr_col]).strip().upper()
@@ -2184,6 +2323,7 @@ class DensoViewerApp(QMainWindow):
                     self.sync_listbox_selection()
             
             self.update_hex_view()
+            self.draw_map()
 
     def export_modified_bin(self):
         self.data_manager._ensure_bin_loaded()

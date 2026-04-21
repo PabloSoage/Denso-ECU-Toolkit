@@ -2,15 +2,17 @@ import struct
 from PyQt6.QtCore import Qt, QAbstractTableModel, QModelIndex, QVariant
 
 class HexTableModel(QAbstractTableModel):
-    def __init__(self, bin_data, map_array, map_dicts, fmt='>B', sparkline_style='Bars'):
+    def __init__(self, bin_data, map_array, map_dicts, fmt='>B', sparkline_style='Bars', row_width=16):
         super().__init__()
-        self.update_settings(bin_data, map_array, map_dicts, fmt, sparkline_style)
+        self.update_settings(bin_data, map_array, map_dicts, fmt, sparkline_style, row_width)
 
-    def update_settings(self, bin_data, map_array, map_dicts, fmt, sparkline_style):
+    def update_settings(self, bin_data, map_array, map_dicts, fmt, sparkline_style, row_width=16):
+        self.beginResetModel()
         self.bin_data = bin_data
         self.map_array = map_array
         self.map_dicts = map_dicts
         self.fmt = fmt
+        self.row_width = row_width
         self.endian = fmt[0]
         self.fmt_char = fmt[-1]
         
@@ -18,13 +20,13 @@ class HexTableModel(QAbstractTableModel):
         elif self.fmt_char.lower() == 'h': self.bytes_per_col = 2
         else: self.bytes_per_col = 1
             
-        self.data_cols = max(1, 16 // self.bytes_per_col)
+        self.data_cols = max(1, self.row_width // self.bytes_per_col)
         self.sparkline_style = sparkline_style
-        self.layoutChanged.emit()
+        self.endResetModel()
 
     def rowCount(self, parent=QModelIndex()):
         if not self.bin_data: return 0
-        return (len(self.bin_data) + 15) // 16
+        return (len(self.bin_data) + self.row_width - 1) // self.row_width
 
     def columnCount(self, parent=QModelIndex()):
         return self.data_cols + 1
@@ -36,7 +38,7 @@ class HexTableModel(QAbstractTableModel):
                     return "Profile"
                 return f"{section * self.bytes_per_col:02X}"
             else:
-                return f"{section*16:08X}"
+                return f"{section*self.row_width:08X}"
         return QVariant()
 
     def data(self, index, role=Qt.ItemDataRole.DisplayRole):
@@ -46,8 +48,8 @@ class HexTableModel(QAbstractTableModel):
         
         if is_sparkline:
             if role == Qt.ItemDataRole.UserRole + 1:
-                row_addr = index.row() * 16
-                end_addr = min(row_addr + 16, len(self.bin_data))
+                row_addr = index.row() * self.row_width
+                end_addr = min(row_addr + self.row_width, len(self.bin_data))
                 val_bytes = self.bin_data[row_addr:end_addr]
                 values = []
                 for i in range(0, len(val_bytes), self.bytes_per_col):
@@ -62,7 +64,7 @@ class HexTableModel(QAbstractTableModel):
             return QVariant()
             
         col_offset = index.column() * self.bytes_per_col
-        addr = index.row() * 16 + col_offset
+        addr = index.row() * self.row_width + col_offset
         
         if role == Qt.ItemDataRole.DisplayRole:
             if addr + self.bytes_per_col <= len(self.bin_data):
@@ -85,10 +87,10 @@ class HexTableModel(QAbstractTableModel):
             
             # Check edge neighbors to determine outlines
             edges = 0
-            if addr < 16 or self.map_array[addr - 16] != mid: edges |= 1 # Top
-            if addr + 16 >= len(self.map_array) or self.map_array[addr + 16] != mid: edges |= 2 # Bottom
+            if addr < self.row_width or self.map_array[addr - self.row_width] != mid: edges |= 1 # Top
+            if addr + self.row_width >= len(self.map_array) or self.map_array[addr + self.row_width] != mid: edges |= 2 # Bottom
             if col_offset == 0 or addr == 0 or self.map_array[addr - self.bytes_per_col] != mid: edges |= 4 # Left
-            if col_offset + self.bytes_per_col >= 16 or addr + self.bytes_per_col >= len(self.map_array) or self.map_array[addr + self.bytes_per_col] != mid: edges |= 8 # Right
+            if col_offset + self.bytes_per_col >= self.row_width or addr + self.bytes_per_col >= len(self.map_array) or self.map_array[addr + self.bytes_per_col] != mid: edges |= 8 # Right
             
             info = self.map_dicts.get(mid)
             if not info: return QVariant()

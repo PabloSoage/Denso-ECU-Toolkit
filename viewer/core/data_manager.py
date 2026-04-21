@@ -108,8 +108,17 @@ class DataManager:
                     
                     # You might want to grab user defined shape from custom map settings if defined
                     custom = self.custom_map_settings.get(addr_hex, {})
-                    user_sx = custom.get('Size_X', min(length, 16))
-                    user_sy = custom.get('Size_Y', max(1, length // min(length, 16)))
+                    bpc = 1
+                    fmt_char = custom.get('z_format', self.z_format_3d)[-1]
+                    if fmt_char == 'f': bpc = 4
+                    elif fmt_char.lower() == 'h': bpc = 2
+                    elif fmt_char.lower() in ('i', 'l'): bpc = 4
+                    
+                    num_elements = length // bpc if bpc > 0 else length
+                    if num_elements == 0: num_elements = 1
+
+                    user_sx = custom.get('Size_X', min(num_elements, 16))
+                    user_sy = custom.get('Size_Y', max(1, num_elements // max(user_sx, 1)))
                     
                     rows.append({
                         'Map_Z_Addr': addr_hex,
@@ -146,8 +155,22 @@ class DataManager:
             self.df = pd.DataFrame()
             
         self.total_maps = len(self.df)
-        self.current_index = 0
-        self.current_map_addr = ''
+        
+        # Re-apply current selection if possible
+        if self.current_map_addr and hasattr(self, 'current_map_addr') and not self.df.empty:
+            match = self.df.index[self.df['Wrapper_Addr'].str.strip().str.upper() == self.current_map_addr.upper()].tolist()
+            if not match:
+                addr_col = 'Map_Z_Addr' if 'Map_Z_Addr' in self.df.columns else 'Curve_Data_Addr'
+                match = self.df.index[self.df[addr_col].str.strip().str.upper() == self.current_map_addr.upper()].tolist()
+            if match:
+                self.current_index = match[0]
+            else:
+                self.current_index = 0
+                self.current_map_addr = ''
+        else:
+            self.current_index = 0
+            self.current_map_addr = ''
+            
         return True, ''
 
     def read_axis(self, hex_addr, size, endian, axis_format):
@@ -282,12 +305,12 @@ class DataManager:
             size_x = num_elements
             matrix_z = np.array(z_values)
         else:
-            if chunk_sx is not None and chunk_sy is not None:
-                size_x = chunk_sx
-                size_y = chunk_sy
-            else:
-                size_x = int(row.get('Size_X', min(num_elements, 16)))
-                size_y = int(row.get('Size_Y', max(1, num_elements // max(size_x, 1))))
+            default_sx = chunk_sx if chunk_sx is not None else min(num_elements, 16)
+            default_sy = chunk_sy if chunk_sy is not None else max(1, num_elements // max(default_sx, 1))
+            
+            size_x = int(custom.get('Size_X', row.get('Size_X', default_sx)))
+            size_y = int(custom.get('Size_Y', row.get('Size_Y', default_sy)))
+            
             actual_elements = size_x * size_y
 
             # Truncate or pad to fit matrix
