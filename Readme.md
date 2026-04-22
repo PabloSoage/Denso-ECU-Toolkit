@@ -103,3 +103,20 @@ To properly extract and visualize all maps, follow this standard reverse-enginee
 
 ## ⚠️ Disclaimer
 This toolset is provided for educational, research, and reverse-engineering purposes only. Modifying ECU binaries without a proper understanding of combustion engine dynamics, checksum corrections, and hardware limitations can result in catastrophic engine failure or illegal emissions outputs. The authors take no responsibility for any damage caused by the use of these tools.
+
+## ⚖️ License
+
+Copyright (C) 2026 Pablo Soage Rodas
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with this program. If not, see <https://www.gnu.org/licenses/>.
