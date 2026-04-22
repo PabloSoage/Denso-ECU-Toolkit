@@ -50,6 +50,8 @@ class MapListManager:
         
         search_term = self.main_window.search_box.text().lower()
         
+        use_smart_filter = getattr(self.main_window, 'cb_smart_filter', None) and self.main_window.cb_smart_filter.isChecked()
+
         for idx, row in self.main_window.data_manager.df.iterrows():
             mtype = row.get('Map_Type', self.main_window.map_mode)
             
@@ -77,6 +79,11 @@ class MapListManager:
                         
             if term_match and tag_match:
                 item = QListWidgetItem(display_text)
+
+                if use_smart_filter:
+                    # If the axes are not monotonic, we skip this map (it's noise)
+                    if not self.main_window.data_manager.check_map_axes(row):
+                        continue
                 
                 # Check for modifications
                 try:

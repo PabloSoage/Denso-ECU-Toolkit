@@ -565,3 +565,49 @@ class DataManager:
                     except: pass
 
         return True
+
+    def check_map_axes(self, row):
+        """
+        Checks if the map axes are monotonic (increasing or decreasing).
+        Filters out noise/false positives from heuristic scans.
+        """
+        mtype = row.get('Map_Type', '')
+        size_x = int(row.get('Size_X', 1))
+        ax_x_hex = str(row.get('Axis_X_Addr', '0')).strip()
+        
+        # Use endianness from global 3D/2D config and current axis format
+        endian = self.z_format_3d[0] if mtype == '3d' else self.z_format_2d[0]
+        ax_fmt = self.ax_format
+        
+        def is_monotonic(arr):
+            if len(arr) < 2: 
+                return True # Single value maps have no trend to check
+                
+            # Calculate differences between consecutive elements (discrete derivative)
+            diffs = np.diff(arr)
+            
+            # Check if strictly non-decreasing (and increases at least once)
+            is_increasing = np.all(diffs >= 0) and np.any(diffs > 0)
+            # Check if strictly non-increasing (and decreases at least once)
+            is_decreasing = np.all(diffs <= 0) and np.any(diffs < 0)
+            
+            return is_increasing or is_decreasing
+
+        # 1. Check X Axis
+        axis_x = self.read_axis(ax_x_hex, size_x, endian, ax_fmt)
+        if not is_monotonic(axis_x):
+            return False
+            
+        # 2. Check Y Axis (3D only)
+        if mtype == '3d' or (mtype == 'tags' and getattr(self, 'hex_plot_mode', '3d') == '3d'):
+            size_y = int(row.get('Size_Y', 1))
+            ax_y_hex = str(row.get('Axis_Y_Addr', '0')).strip()
+            
+            # If a 3D map has no Y axis defined (addr 0), read_axis returns a dummy arange.
+            # is_monotonic() will return True, which correctly avoids discarding it.
+            if ax_y_hex and ax_y_hex not in ('0', '0X0', '00000000'):
+                axis_y = self.read_axis(ax_y_hex, size_y, endian, ax_fmt)
+                if not is_monotonic(axis_y):
+                    return False
+                
+        return True

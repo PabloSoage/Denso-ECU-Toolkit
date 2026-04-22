@@ -1,5 +1,5 @@
 import os
-from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QComboBox, 
+from PyQt6.QtWidgets import (QCheckBox, QWidget, QVBoxLayout, QHBoxLayout, QComboBox, 
                              QLabel, QLineEdit, QPushButton, QMenu, QListWidget, QListWidgetItem, QInputDialog, QMessageBox)
 
 class LeftPanelWidget(QWidget):
@@ -36,6 +36,11 @@ class LeftPanelWidget(QWidget):
         search_layout.addWidget(self.main_window.search_box)
         search_layout.addWidget(self.main_window.btn_tag_filter)
         self.layout.addLayout(search_layout)
+
+        self.main_window.cb_smart_filter = QCheckBox("Smart Axis Filter (Hide Noise)")
+        self.main_window.cb_smart_filter.setChecked(False)
+        self.main_window.cb_smart_filter.toggled.connect(lambda checked: self.main_window.update_list())
+        self.layout.addWidget(self.main_window.cb_smart_filter)
         
         self.main_window.map_listbox = QListWidget()
         self.main_window.map_listbox.itemSelectionChanged.connect(self.main_window.on_list_select)
