@@ -61,11 +61,14 @@ class SettingsDialog(QDialog):
         ly_main = QHBoxLayout()
         rb_main_map = QRadioButton("Map Viewer")
         rb_main_hex = QRadioButton("Hex Dump")
-        if self.main_window.btn_main_mode.text() == "Mode: Hex Dump":
-            rb_main_hex.setChecked(True)
-        else:
-            rb_main_map.setChecked(True)
-        ly_main.addWidget(rb_main_map); ly_main.addWidget(rb_main_hex)
+        rb_main_pot = QRadioButton("Potential Maps")
+        
+        current_mode = self.main_window.btn_main_mode.text()
+        if current_mode == "Mode: Hex Dump": rb_main_hex.setChecked(True)
+        elif current_mode == "Mode: Potential Maps": rb_main_pot.setChecked(True)
+        else: rb_main_map.setChecked(True)
+        
+        ly_main.addWidget(rb_main_map); ly_main.addWidget(rb_main_hex); ly_main.addWidget(rb_main_pot)
         gb_main.setLayout(ly_main)
         vbox_f.addWidget(gb_main)
 
@@ -89,6 +92,7 @@ class SettingsDialog(QDialog):
         le_3d = add_file_row(vbox_f, "3D CSV:", self.main_window.data_manager.csv_3d_path)
         le_2d = add_file_row(vbox_f, "2D CSV:", self.main_window.data_manager.csv_2d_path)
         le_dtc = add_file_row(vbox_f, "DTC CSV:", getattr(self.main_window.data_manager, 'csv_dtc_path', ''))
+        le_pot = add_file_row(vbox_f, "Potential CSV:", getattr(self.main_window.data_manager, 'csv_potential_path', 'potential_maps.csv'))
         vbox_f.addStretch()
         tabs.addTab(tab_files, "Files & Mode")
         
@@ -257,13 +261,6 @@ class SettingsDialog(QDialog):
         layout.addWidget(btns)
         
         if self.exec():
-            if rb_main_hex.isChecked() and self.main_window.btn_main_mode.text() != "Mode: Hex Dump":
-                self.main_window.btn_main_mode.setText("Mode: Map Viewer")
-                self.main_window.toggle_main_mode()
-            elif rb_main_map.isChecked() and self.main_window.btn_main_mode.text() == "Mode: Hex Dump":
-                self.main_window.btn_main_mode.setText("Mode: Hex Dump")
-                self.main_window.toggle_main_mode()
-
             # Update engine
             new_engine = 'matplotlib' if self.main_window.rb_mpl.isChecked() else 'pyqtgraph'
             engine_changed = (new_engine != self.main_window.render_engine)
@@ -274,7 +271,19 @@ class SettingsDialog(QDialog):
             self.main_window.data_manager.csv_3d_path = le_3d.text()
             self.main_window.data_manager.csv_2d_path = le_2d.text()
             self.main_window.data_manager.csv_dtc_path = le_dtc.text()
+            self.main_window.data_manager.csv_potential_path = le_pot.text()
             self.main_window.data_manager.load_dtc_csv()
+            
+            # Cambiamos de modo si se ha modificado en las opciones
+            new_target_mode = "Map Viewer"
+            if rb_main_hex.isChecked(): new_target_mode = "Hex Dump"
+            elif rb_main_pot.isChecked(): new_target_mode = "Potential Maps"
+            
+            if self.main_window.btn_main_mode.text() != f"Mode: {new_target_mode}":
+                idx = ['Map Viewer', 'Hex Dump', 'Potential Maps'].index(new_target_mode)
+                prev_mode = ['Map Viewer', 'Hex Dump', 'Potential Maps'][idx - 1]
+                self.main_window.btn_main_mode.setText(f"Mode: {prev_mode}")
+                self.main_window.toggle_main_mode()
             
             if rb_m4.isChecked():
                 self.main_window.cmb_map_type.setVisible(True)

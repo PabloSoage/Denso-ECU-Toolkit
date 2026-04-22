@@ -365,7 +365,9 @@ class MapRenderer:
                                 cell_addr = base_addr + (i * size_x + j) * bpv
                                 if self.main_window.data_manager._bin_data_cache[cell_addr:cell_addr+bpv] != self.main_window.data_manager._modified_bin_data[cell_addr:cell_addr+bpv]:
                                     item.setForeground(QColor(255, 0, 0))
-                            if current_type != 'tags' and not (cmp_index and cmp_index.currentIndex() > 1):
+                            
+                            is_potential = self.main_window.btn_main_mode.text() == "Mode: Potential Maps"
+                            if current_type != 'tags' and not (cmp_index and cmp_index.currentIndex() > 1) and not is_potential:
                                 item.setData(Qt.ItemDataRole.UserRole, {
                                     "address": base_addr + (i * size_x + j) * bpv,
                                     "fmt_char": current_fmt[-1],
@@ -400,7 +402,8 @@ class MapRenderer:
                             if self.main_window.data_manager._bin_data_cache[cell_addr:cell_addr+bpv] != self.main_window.data_manager._modified_bin_data[cell_addr:cell_addr+bpv]:
                                 item.setForeground(QColor(255, 0, 0))
 
-                        if current_type != 'tags' and not (cmp_index and cmp_index.currentIndex() > 1):
+                        is_potential = self.main_window.btn_main_mode.text() == "Mode: Potential Maps"
+                        if current_type != 'tags' and not (cmp_index and cmp_index.currentIndex() > 1) and not is_potential:
                             item.setData(Qt.ItemDataRole.UserRole, {
                                 "address": base_addr + (j) * bpv,
                                 "fmt_char": current_fmt[-1],

@@ -145,14 +145,15 @@ class DensoViewerApp(QMainWindow):
         return super().eventFilter(obj, event)
 
     def load_data(self, auto_scroll=True):
-                                
-        success, msg = self.data_manager.load_csv(self.map_mode)
+        current_main_mode = getattr(self, 'btn_main_mode', None)
+        mode_str = current_main_mode.text().replace("Mode: ", "") if current_main_mode else "Map Viewer"
         
-                                        
+        success, msg = self.data_manager.load_csv(self.map_mode, main_mode=mode_str)
+        
         if not success:
             self.map_listbox.clear()
             self.status_lbl.setText(msg)
-            if "File not found" not in msg:
+            if "not found" not in msg:
                 QMessageBox.critical(self, "Error", msg)
             return
             
@@ -331,7 +332,7 @@ class DensoViewerApp(QMainWindow):
         self.map_list_manager.sync_listbox_selection()
 
     def toggle_main_mode(self):
-        modes = ['Map Viewer', 'Hex Dump']
+        modes = ['Map Viewer', 'Hex Dump', 'Potential Maps']
         current = self.btn_main_mode.text().replace("Mode: ", "")
         idx = modes.index(current)
         new_mode = modes[(idx + 1) % len(modes)]
@@ -339,10 +340,10 @@ class DensoViewerApp(QMainWindow):
         
         self.rebuild_plot_axes()
         
-        if new_mode == 'Map Viewer':
+        if new_mode in ('Map Viewer', 'Potential Maps'):
             self.btn_toggle.setVisible(True)
             self.btn_hex_plot_toggle.setVisible(False)
-            self.btn_hex_plot_mode.setVisible(self.map_mode == 'tags')
+            self.btn_hex_plot_mode.setVisible(self.map_mode == 'tags' and new_mode != 'Potential Maps')
             self.spin_hex_cols.setVisible(False)
             
             # Reset splitter order for map viewer
@@ -378,7 +379,7 @@ class DensoViewerApp(QMainWindow):
             self.bottom_stack.setCurrentIndex(1) # Hex Table
             self.apply_splitter_position()
             
-        self.draw_map()
+        self.load_data()
 
     def on_hex_cols_changed(self, val):
         self.hex_row_width = val

@@ -12,6 +12,7 @@ class DataManager:
         self.csv_3d_path = ""
         self.csv_2d_path = ""
         self.csv_dtc_path = "2d_and_3D_maps_DTC_Mapped.csv"
+        self.csv_potential_path = "potential_maps.csv"
         
         self.dtc_data = {}  # { "Wrapper_Addr": { "RAM": ..., "Func": ... } }
         self.tags = {}  # { hex_address: {"tags": ["Tag1", ...], "length": int} }
@@ -96,7 +97,32 @@ class DataManager:
             print("Error applying edit:", e)
             return False
 
-    def load_csv(self, map_mode):
+    def load_csv(self, map_mode, main_mode="Map Viewer"):
+        if main_mode == "Potential Maps":
+            if not getattr(self, 'csv_potential_path', None) or not os.path.exists(self.csv_potential_path):
+                self.df = pd.DataFrame()
+                self.total_maps = 0
+                return False, "Potential Maps CSV not found."
+            try:
+                df_pot = pd.read_csv(self.csv_potential_path, dtype=str)
+                
+                if 'Map_Z_Addr' in df_pot.columns:
+                    df_pot['Curve_Data_Addr'] = df_pot['Map_Z_Addr']
+                
+                if map_mode != 'all' and map_mode != 'tags':
+                    df_pot = df_pot[df_pot['Map_Type'].str.lower() == map_mode]
+                elif map_mode == 'tags':
+                    df_pot = pd.DataFrame()
+                    
+                self.df = df_pot.reset_index(drop=True).fillna('')
+                self.total_maps = len(self.df)
+                
+                self.current_index = 0
+                self.current_map_addr = ''
+                return True, ""
+            except Exception as e:
+                return False, str(e)
+
         modes_to_load = [map_mode] if map_mode != 'all' else ['3d', '2d', 'tags']
         df_list = []
         
@@ -367,6 +393,7 @@ class DataManager:
             "csv_3d_path": self.csv_3d_path,
             "csv_2d_path": self.csv_2d_path,
             "csv_dtc_path": self.csv_dtc_path,
+            "csv_potential_path": getattr(self, 'csv_potential_path', 'potential_maps.csv'),
             "tags": self.tags,
             "hexdump_tags": self.hexdump_tags,
             "z_format_3d": self.z_format_3d,
@@ -393,6 +420,7 @@ class DataManager:
             self.csv_3d_path = data.get("csv_3d_path", "")
             self.csv_2d_path = data.get("csv_2d_path", "")
             self.csv_dtc_path = data.get("csv_dtc_path", "2d_and_3D_maps_DTC_Mapped.csv")
+            self.csv_potential_path = data.get("csv_potential_path", "potential_maps.csv")
             old_tags = data.get("tags", {})
             self.tags = {}
             for k, v in old_tags.items():
