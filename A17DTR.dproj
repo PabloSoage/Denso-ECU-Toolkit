@@ -1,0 +1,632 @@
+{
+    "bin_path": "115_e3a4d17c28.bin",
+    "csv_3d_path": "3d_maps_review.csv",
+    "csv_2d_path": "2d_maps_review.csv",
+    "csv_dtc_path": "2d_and_3D_maps_DTC_Mapped.csv",
+    "csv_potential_path": "potential_maps.csv",
+    "tags": {
+        "000449C4": {
+            "tags": [
+                "Turbo",
+                "VNT Duty Cycle",
+                "Boost Control (N75)",
+                "Variable Geometry Turbocharger Control",
+                "EGR",
+                "EGR Duty Cycle"
+            ],
+            "length": 1
+        },
+        "000F6FAC": {
+            "tags": [
+                "Air Mass (MAF) [mg/stroke]"
+            ],
+            "length": 1
+        },
+        "000F6FEC": {
+            "tags": [
+                "Coolant Temp (ECT) [\u00baC]"
+            ],
+            "length": 1
+        },
+        "0003A638": {
+            "tags": [
+                "Turbo",
+                "Turbo Pressure"
+            ],
+            "length": 1
+        },
+        "000EF954": {
+            "tags": [
+                "RPM"
+            ],
+            "length": 1
+        },
+        "000EF9A4": {
+            "tags": [
+                "Intake Air Temperature - IAT [\u00baC]"
+            ],
+            "length": 1
+        },
+        "000EF9EC": {
+            "tags": [
+                "MAP [mbar]"
+            ],
+            "length": 1
+        },
+        "000F7018": {
+            "tags": [
+                "Duty Cycle",
+                "/ PWM %",
+                "(High-Closed, Low-Open)"
+            ],
+            "length": 1
+        },
+        "000C230C": {
+            "tags": [
+                "RPM"
+            ],
+            "length": 1
+        },
+        "000C235C": {
+            "tags": [
+                "IAT - Intake Air Temperature [\u00baC]"
+            ],
+            "length": 1
+        },
+        "0004827A": {
+            "tags": [
+                "Injection",
+                "Airflow Meter 1",
+                "Airflow Meter",
+                "Target Air Mass (MAF)"
+            ],
+            "length": 1
+        },
+        "000C23D8": {
+            "tags": [
+                "mg/stroke"
+            ],
+            "length": 1
+        },
+        "000482A8": {
+            "tags": [
+                "Injection",
+                "Airflow Meter 2",
+                "Airflow Meter",
+                "Target Air Mass (MAF)"
+            ],
+            "length": 1
+        },
+        "000C26CC": {
+            "tags": [
+                "RPM"
+            ],
+            "length": 1
+        },
+        "000C271C": {
+            "tags": [
+                "IAT - Intake Air Temperature [\u00baC]"
+            ],
+            "length": 1
+        },
+        "000C276C": {
+            "tags": [
+                "mg/stroke"
+            ],
+            "length": 1
+        },
+        "000C23AC": {
+            "tags": [
+                "mg/stroke"
+            ],
+            "length": 1
+        },
+        "000C2798": {
+            "tags": [
+                "mg/stroke"
+            ],
+            "length": 1
+        },
+        "000C2B2C": {
+            "tags": [
+                "mg/stroke"
+            ],
+            "length": 1
+        },
+        "000C2A8C": {
+            "tags": [
+                "RPM"
+            ],
+            "length": 1
+        },
+        "000C2ADC": {
+            "tags": [
+                "IAT - Intake Air Temperature [\u00baC]"
+            ],
+            "length": 1
+        },
+        "000482D6": {
+            "tags": [
+                "Injection",
+                "Airflow Meter 3",
+                "Airflow Meter",
+                "Target Air Mass (MAF)"
+            ],
+            "length": 1
+        },
+        "000C2B58": {
+            "tags": [
+                "mg/stroke"
+            ],
+            "length": 1
+        },
+        "000C2EEC": {
+            "tags": [
+                "mg/stroke"
+            ],
+            "length": 1
+        },
+        "000C2E4C": {
+            "tags": [
+                "RPM"
+            ],
+            "length": 1
+        },
+        "000C2E9C": {
+            "tags": [
+                "IAT - Intake Air Temperature [\u00baC]"
+            ],
+            "length": 1
+        },
+        "000482FC": {
+            "tags": [
+                "Injection",
+                "Airflow Meter 4",
+                "Airflow Meter",
+                "Target Air Mass (MAF)"
+            ],
+            "length": 1
+        },
+        "000C2F18": {
+            "tags": [
+                "mg/stroke"
+            ],
+            "length": 1
+        },
+        "0003C88C": {
+            "tags": [
+                "Injection",
+                "Fuel Table",
+                "Cranking Injection",
+                "Start Fuel"
+            ],
+            "length": 1
+        },
+        "000C57DC": {
+            "tags": [
+                "ECT (Engine Coolant Temp) [\u00baC]"
+            ],
+            "length": 1
+        },
+        "000C5798": {
+            "tags": [
+                "IQ (Injected Quantity) [mm3/stk] x0.5"
+            ],
+            "length": 1
+        },
+        "000C5868": {
+            "tags": [
+                "ECT Injection Time [us]"
+            ],
+            "length": 1
+        },
+        "00032184": {
+            "tags": [
+                "Injection",
+                "Rail Pressure Limiter (Fuel Temp)",
+                "Limiters",
+                "Rail Pressure"
+            ],
+            "length": 1
+        },
+        "000CE770": {
+            "tags": [
+                "RPM"
+            ],
+            "length": 1
+        },
+        "000CE814": {
+            "tags": [
+                "Bar",
+                "(/10 MPa)"
+            ],
+            "length": 1
+        },
+        "000CE7C4": {
+            "tags": [
+                "Fuel Temperature [\u00baC]"
+            ],
+            "length": 1
+        },
+        "000321B0": {
+            "tags": [
+                "Injection",
+                "Rail Pressure Limiter (Fuel Temp)",
+                "Rail Pressure",
+                "Limiters"
+            ],
+            "length": 1
+        },
+        "000CEBB0": {
+            "tags": [
+                "Fuel Temperature [\u00baC]"
+            ],
+            "length": 1
+        },
+        "000CEB5C": {
+            "tags": [
+                "RPM"
+            ],
+            "length": 1
+        },
+        "000CEC00": {
+            "tags": [
+                "Bar",
+                "(/10 MPa)"
+            ],
+            "length": 1
+        },
+        "00042F3C": {
+            "tags": [
+                "Limiters",
+                "Torque Limiter",
+                "Gear-Dependent Torque Limiter"
+            ],
+            "length": 1
+        },
+        "000F69B4": {
+            "tags": [
+                "RPM"
+            ],
+            "length": 1
+        },
+        "000F6A10": {
+            "tags": [
+                "Gear (0-Reverse, 7-Limp Mode)"
+            ],
+            "length": 1
+        },
+        "000F6A30": {
+            "tags": [
+                "Kgm",
+                "(x9,807 Nm)"
+            ],
+            "length": 1
+        },
+        "000CEFEC": {
+            "tags": [
+                "Bar",
+                "(/10 MPa)"
+            ],
+            "length": 1
+        },
+        "000CEF48": {
+            "tags": [
+                "RPM"
+            ],
+            "length": 1
+        },
+        "000CEF9C": {
+            "tags": [
+                "Fuel Temp [\u00baC]"
+            ],
+            "length": 1
+        },
+        "000321DC": {
+            "tags": [
+                "Limiters",
+                "Injection",
+                "Rail Pressure",
+                "Rail Pressure Limiter (Fuel Temp)"
+            ],
+            "length": 1
+        },
+        "00032200": {
+            "tags": [
+                "Limiters",
+                "Injection",
+                "Rail Pressure",
+                "Rail Pressure Limiter (Fuel Temp)"
+            ],
+            "length": 1
+        },
+        "000CF334": {
+            "tags": [
+                "RPM"
+            ],
+            "length": 1
+        },
+        "000CF388": {
+            "tags": [
+                "Fuel Temp [\u00baC]"
+            ],
+            "length": 1
+        },
+        "000CF3D8": {
+            "tags": [
+                "Bar",
+                "(/10 MPa)"
+            ],
+            "length": 1
+        },
+        "0006A288": {
+            "tags": [
+                "Limiters",
+                "Injection",
+                "Rail Pressure",
+                "Rail Pressure Limiter (Fuel Temp)"
+            ],
+            "length": 1
+        },
+        "000D0BD4": {
+            "tags": [
+                "RPM"
+            ],
+            "length": 1
+        },
+        "000D0C28": {
+            "tags": [
+                "Fuel Temp [\u00baC]"
+            ],
+            "length": 1
+        },
+        "000D0C68": {
+            "tags": [
+                "Bar",
+                "(/10 MPa)"
+            ],
+            "length": 1
+        },
+        "000EFF8C": {
+            "tags": [
+                "MAP [mbar]"
+            ],
+            "length": 1
+        },
+        "0003A6A6": {
+            "tags": [
+                "Turbo",
+                "Boost Pressure",
+                "Turbo Pressure"
+            ],
+            "length": 1
+        },
+        "000EFEEC": {
+            "tags": [
+                "RPM"
+            ],
+            "length": 1
+        },
+        "000EFF3C": {
+            "tags": [
+                "Intake Air Temperature - IAT [\u00baC]"
+            ],
+            "length": 1
+        },
+        "000B4258": {
+            "tags": [
+                "Injection Quantity - IQ [mm/stroke]"
+            ],
+            "length": 1
+        },
+        "000B41C4": {
+            "tags": [
+                "RPM"
+            ],
+            "length": 1
+        },
+        "000B4220": {
+            "tags": [
+                "Demanded Torque [Nm]",
+                "(x2.0)"
+            ],
+            "length": 1
+        },
+        "00041E18": {
+            "tags": [
+                "Torque to IQ Conversion Map"
+            ],
+            "length": 1
+        }
+    },
+    "hexdump_tags": {
+        "000C23D8": {
+            "tags": [
+                "Injection",
+                "Airflow Meter 1",
+                "Airflow Meter",
+                "Target Air Mass (MAF)"
+            ],
+            "length": 756,
+            "chunks": [
+                [
+                    795608,
+                    756
+                ]
+            ]
+        },
+        "000C2798": {
+            "tags": [
+                "Injection",
+                "Airflow Meter 2",
+                "Airflow Meter",
+                "Target Air Mass (MAF)"
+            ],
+            "length": 756,
+            "chunks": [
+                [
+                    796568,
+                    756
+                ]
+            ]
+        },
+        "000C2B58": {
+            "tags": [
+                "Injection",
+                "Airflow Meter 3",
+                "Airflow Meter",
+                "Target Air Mass (MAF)"
+            ],
+            "length": 756,
+            "chunks": [
+                [
+                    797528,
+                    756
+                ]
+            ]
+        },
+        "000C2F18": {
+            "tags": [
+                "Injection",
+                "Airflow Meter 4",
+                "Airflow Meter",
+                "Target Air Mass (MAF)"
+            ],
+            "length": 756,
+            "chunks": [
+                [
+                    798488,
+                    756
+                ]
+            ]
+        }
+    },
+    "z_format_3d": ">H",
+    "z_format_2d": ">f",
+    "ax_format": "f",
+    "custom_map_settings": {
+        "000449C4": {
+            "z_format": ">f",
+            "ax_format": "f",
+            "factor": 1.0,
+            "offset": 0.0
+        },
+        "0003A638": {
+            "z_format": ">H",
+            "ax_format": "f",
+            "factor": 0.1,
+            "offset": 0.0
+        },
+        "000C23D8": {
+            "z_format": ">H",
+            "ax_format": "f",
+            "factor": 0.02,
+            "offset": 0.0,
+            "Size_X": 20,
+            "Size_Y": 18
+        },
+        "000482A8": {
+            "z_format": ">H",
+            "ax_format": "f",
+            "factor": 0.02,
+            "offset": 0.0
+        },
+        "0004827A": {
+            "z_format": ">H",
+            "ax_format": "f",
+            "factor": 0.02,
+            "offset": 0.0
+        },
+        "000C2798": {
+            "z_format": ">H",
+            "ax_format": "f",
+            "factor": 0.02,
+            "offset": 0.0,
+            "Size_X": 20,
+            "Size_Y": 18
+        },
+        "000482D6": {
+            "z_format": ">H",
+            "ax_format": "f",
+            "factor": 0.02,
+            "offset": 0.0
+        },
+        "000C2B58": {
+            "z_format": ">H",
+            "ax_format": "f",
+            "factor": 0.02,
+            "offset": 0.0,
+            "Size_X": 20,
+            "Size_Y": 18
+        },
+        "000482FC": {
+            "z_format": ">H",
+            "ax_format": "f",
+            "factor": 0.02,
+            "offset": 0.0
+        },
+        "000C2F18": {
+            "z_format": ">H",
+            "ax_format": "f",
+            "factor": 0.02,
+            "offset": 0.0,
+            "Size_X": 20,
+            "Size_Y": 18
+        },
+        "0003C88C": {
+            "z_format": ">H",
+            "ax_format": "f",
+            "factor": 1.0,
+            "offset": 0.0
+        },
+        "00032184": {
+            "z_format": ">H",
+            "ax_format": "f",
+            "factor": 0.1,
+            "offset": 0.0
+        },
+        "000321B0": {
+            "z_format": ">H",
+            "ax_format": "f",
+            "factor": 0.1,
+            "offset": 0.0
+        },
+        "00042F3C": {
+            "z_format": ">f",
+            "ax_format": "f",
+            "factor": 1.0,
+            "offset": 0.0
+        },
+        "000321DC": {
+            "z_format": ">H",
+            "ax_format": "f",
+            "factor": 0.1,
+            "offset": 0.0
+        },
+        "00032200": {
+            "z_format": ">H",
+            "ax_format": "f",
+            "factor": 0.1,
+            "offset": 0.0
+        },
+        "0006A288": {
+            "z_format": ">H",
+            "ax_format": "f",
+            "factor": 0.1,
+            "offset": 0.0
+        },
+        "0003A6A6": {
+            "z_format": ">H",
+            "ax_format": "f",
+            "factor": 0.1,
+            "offset": 0.0
+        },
+        "00041E18": {
+            "z_format": ">H",
+            "ax_format": "f",
+            "factor": 0.00781,
+            "offset": 0.0
+        }
+    },
+    "bin_diff": {}
+}
