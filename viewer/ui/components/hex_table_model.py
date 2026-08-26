@@ -10,6 +10,10 @@ from ...core import formats
 #: Extra column appended after the data columns, holding the row sparkline.
 PROFILE_HEADER = "Profile"
 
+#: Qt passes the parent index positionally; an invalid QModelIndex is a value,
+#: so one shared instance is safe and keeps it out of a mutable default.
+NO_PARENT = QModelIndex()
+
 
 class HexTableModel(QAbstractTableModel):
     def __init__(self, bin_data, map_array, map_dicts, fmt=">B", sparkline_style="Bars", row_width=16):
@@ -48,12 +52,12 @@ class HexTableModel(QAbstractTableModel):
 
     # ------------------------------------------------------------------
 
-    def rowCount(self, parent=QModelIndex()):
+    def rowCount(self, parent=NO_PARENT):
         if parent.isValid() or not self.bin_data:
             return 0
         return (len(self.bin_data) + self.row_width - 1) // self.row_width
 
-    def columnCount(self, parent=QModelIndex()):
+    def columnCount(self, parent=NO_PARENT):
         if parent.isValid():
             return 0
         return self.data_cols + 1

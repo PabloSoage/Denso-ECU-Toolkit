@@ -59,11 +59,8 @@ def parse_hex(text):
 
 def read_catalogue(filepath):
     """Read a map CSV, tolerating both the old and the current header layouts."""
-    handle = open(filepath, "r")
-    try:
+    with open(filepath) as handle:
         lines = [line.strip() for line in handle.readlines() if line.strip()]
-    finally:
-        handle.close()
 
     if not lines:
         return []
@@ -220,14 +217,11 @@ def main():
     print("=" * 66)
     print("Forward dataflow analysis (call site -> result RAM -> consumers)")
 
-    handle = open(out_path, "w")
-    try:
+    with open(out_path, "w") as handle:
         handle.write("Map_Type,Wrapper_Addr,Struct_Addr,Map_Data_Addr,"
                      "Target_RAM_Var,Potential_DTC_Func,Confidence,Evidence\n")
         linked_2d, missed_2d = process(csv_2d, "2D", program, handle)
         linked_3d, missed_3d = process(csv_3d, "3D", program, handle)
-    finally:
-        handle.close()
 
     total = linked_2d + linked_3d
     print("-" * 66)

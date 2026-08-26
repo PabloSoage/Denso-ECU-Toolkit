@@ -151,8 +151,7 @@ def run_heuristic_scanner():
 
     widths = infer_widths(rows, data_index=6, elements_index=7)
 
-    handle = open(filepath, "w")
-    try:
+    with open(filepath, "w") as handle:
         handle.write("Map_Type,Struct_Addr,Size_X,Size_Y,Axis_X_Addr,Axis_Y_Addr,"
                      "Data_Addr,Inferred_Width\n")
         for index, row in enumerate(rows):
@@ -160,8 +159,6 @@ def run_heuristic_scanner():
             handle.write("{},{:08X},{},{},{:08X},{:08X},{:08X},{}\n".format(
                 map_type, struct_addr, size_x, size_y, ptr_x, ptr_y, ptr_data, widths[index]
             ))
-    finally:
-        handle.close()
 
     hits_3d = len([r for r in rows if r[0] == "3d"])
     hits_2d = len(rows) - hits_3d

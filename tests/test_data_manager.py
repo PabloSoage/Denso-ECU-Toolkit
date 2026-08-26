@@ -14,7 +14,6 @@ import pytest
 from viewer.core.data_manager import DataManager, parse_address
 from viewer.core.state import Baseline
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -37,7 +36,7 @@ def build_binary(size=0x400):
     data = bytearray(size)
 
     def put(address, values):
-        packed = struct.pack(">%dH" % len(values), *values)
+        packed = struct.pack(f">{len(values)}H", *values)
         data[address:address + len(packed)] = packed
 
     put(AXIS_X_ADDR, AXIS_X)
@@ -70,12 +69,12 @@ def manager(binary_path):
 def map_row(**overrides):
     row = {
         "Map_Type": "3d",
-        "Data_Addr": "%08X" % MAP_ADDR,
+        "Data_Addr": f"{MAP_ADDR:08X}",
         "Struct_Addr": "0000ABCD",
         "Call_Site_Addr": "00001234",
         "Wrapper_Addr": "00001234",
-        "Axis_X_Addr": "%08X" % AXIS_X_ADDR,
-        "Axis_Y_Addr": "%08X" % AXIS_Y_ADDR,
+        "Axis_X_Addr": f"{AXIS_X_ADDR:08X}",
+        "Axis_Y_Addr": f"{AXIS_Y_ADDR:08X}",
         "Size_X": "4",
         "Size_Y": "3",
         "Tag": "",
@@ -87,11 +86,11 @@ def map_row(**overrides):
 def curve_row(**overrides):
     row = {
         "Map_Type": "2d",
-        "Data_Addr": "%08X" % CURVE_ADDR,
+        "Data_Addr": f"{CURVE_ADDR:08X}",
         "Struct_Addr": "",
         "Call_Site_Addr": "00005678",
         "Wrapper_Addr": "00005678",
-        "Axis_X_Addr": "%08X" % CURVE_AXIS_ADDR,
+        "Axis_X_Addr": f"{CURVE_AXIS_ADDR:08X}",
         "Axis_Y_Addr": "",
         "Size_X": "4",
         "Size_Y": "1",
@@ -127,8 +126,8 @@ class TestParseAddress:
 class TestIdentityKeys:
     def test_data_address_comes_first(self):
         keys = DataManager.identity_keys(map_row())
-        assert keys[0] == "%08X" % MAP_ADDR
-        assert DataManager.canonical_key(map_row()) == "%08X" % MAP_ADDR
+        assert keys[0] == f"{MAP_ADDR:08X}"
+        assert DataManager.canonical_key(map_row()) == f"{MAP_ADDR:08X}"
 
     def test_includes_struct_and_call_site(self):
         keys = DataManager.identity_keys(map_row())
@@ -140,8 +139,10 @@ class TestIdentityKeys:
         assert len(keys) == len(set(keys))
 
     def test_null_columns_are_dropped(self):
-        keys = DataManager.identity_keys(map_row(Struct_Addr="", Call_Site_Addr="00000000"))
-        assert keys == ["%08X" % MAP_ADDR]
+        keys = DataManager.identity_keys(
+            map_row(Struct_Addr="", Call_Site_Addr="00000000", Wrapper_Addr="")
+        )
+        assert keys == [f"{MAP_ADDR:08X}"]
 
 
 # ---------------------------------------------------------------------------
@@ -153,7 +154,7 @@ class TestReadMap:
         matrix, axis_x, axis_y, size_y, size_x, address = manager.read_map(map_row())
         assert matrix.shape == (3, 4)
         assert size_y == 3 and size_x == 4
-        assert address == "%08X" % MAP_ADDR
+        assert address == f"{MAP_ADDR:08X}"
         np.testing.assert_array_equal(matrix.flatten(), MAP_VALUES)
         np.testing.assert_array_equal(axis_x, AXIS_X)
         np.testing.assert_array_equal(axis_y, AXIS_Y)
@@ -180,7 +181,7 @@ class TestReadMap:
             manager.read_map(map_row(Data_Addr=""))
 
     def test_format_override_changes_the_decode(self, manager):
-        manager.custom_map_settings["%08X" % MAP_ADDR] = {"z_format": ">B"}
+        manager.custom_map_settings[f"{MAP_ADDR:08X}"] = {"z_format": ">B"}
         matrix, _, _, _, _, _ = manager.read_map(map_row())
         # 12 bytes read as u8 instead of 6 u16 values.
         assert matrix.shape == (3, 4)
@@ -189,14 +190,14 @@ class TestReadMap:
 
 class TestAxisCache:
     def test_repeated_reads_hit_the_cache(self, manager):
-        first = manager.read_axis("%08X" % AXIS_X_ADDR, 4, "H")
-        second = manager.read_axis("%08X" % AXIS_X_ADDR, 4, "H")
+        first = manager.read_axis(f"{AXIS_X_ADDR:08X}", 4, "H")
+        second = manager.read_axis(f"{AXIS_X_ADDR:08X}", 4, "H")
         assert first is second
 
     def test_editing_invalidates_the_cache(self, manager):
-        manager.read_axis("%08X" % AXIS_X_ADDR, 4, "H")
+        manager.read_axis(f"{AXIS_X_ADDR:08X}", 4, "H")
         manager.apply_edit(AXIS_X_ADDR, 4242, ">H")
-        refreshed = manager.read_axis("%08X" % AXIS_X_ADDR, 4, "H")
+        refreshed = manager.read_axis(f"{AXIS_X_ADDR:08X}", 4, "H")
         assert refreshed[0] == 4242
 
 
@@ -239,9 +240,15 @@ class TestApplyEdit:
 
     def test_is_map_modified_tracks_the_range(self, manager):
         assert not manager.is_map_modified(MAP_ADDR, 24)
-        manager.apply_edit(MAP_ADDR + 10, 5, ">H")
+        # Cell 5 of the map, which holds 5; write something genuinely different.
+        manager.apply_edit(MAP_ADDR + 10, 4242, ">H")
         assert manager.is_map_modified(MAP_ADDR, 24)
         assert not manager.is_map_modified(CURVE_ADDR, 8)
+
+    def test_rewriting_the_same_value_is_not_a_modification(self, manager):
+        manager.apply_edit(MAP_ADDR + 10, MAP_VALUES[5], ">H")
+        assert not manager.is_map_modified(MAP_ADDR, 24)
+        assert not manager.has_edits
 
 
 class TestBinDiff:
@@ -313,7 +320,9 @@ class TestTagResolution:
         manager.tags["00001234"] = {"tags": ["Boost", "Turbo"], "length": 1}
         manager.tags["0000ABCD"] = {"tags": ["Turbo", "VNT"], "length": 1}
         result = manager._tags_for_addresses(*DataManager.identity_keys(map_row()))
-        assert result == ["Boost", "Turbo", "VNT"]
+        # Ordered by identity: data address, then struct (ABCD), then call site
+        # (1234). "Turbo" appears in both and is listed once, where first seen.
+        assert result == ["Turbo", "VNT", "Boost"]
 
 
 class TestCustomSettings:
@@ -325,12 +334,12 @@ class TestCustomSettings:
 
     def test_canonical_key_wins(self, manager):
         manager.custom_map_settings["00001234"] = {"factor": 0.5}
-        manager.custom_map_settings["%08X" % MAP_ADDR] = {"factor": 2.0}
+        manager.custom_map_settings[f"{MAP_ADDR:08X}"] = {"factor": 2.0}
         assert manager.custom_settings_for(map_row())["factor"] == 2.0
 
     def test_writes_go_to_the_canonical_key(self, manager):
         manager.set_custom_setting(map_row(), factor=1.25)
-        assert manager.custom_map_settings["%08X" % MAP_ADDR]["factor"] == 1.25
+        assert manager.custom_map_settings[f"{MAP_ADDR:08X}"]["factor"] == 1.25
 
 
 # ---------------------------------------------------------------------------

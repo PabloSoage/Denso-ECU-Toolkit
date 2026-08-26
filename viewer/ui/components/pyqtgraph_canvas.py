@@ -8,7 +8,7 @@ import matplotlib
 import numpy as np
 import pyqtgraph as pg
 import pyqtgraph.opengl as gl
-from PyQt6.QtWidgets import QWidget, QVBoxLayout, QStackedWidget
+from PyQt6.QtWidgets import QStackedWidget, QVBoxLayout, QWidget
 
 # matplotlib.cm.get_cmap() was removed in 3.9; the registry works on 3.5+ too.
 try:
@@ -40,20 +40,24 @@ class PyQtGraphCanvas(QWidget):
         """Initializes the 3D OpenGL view and its visual components."""
         self.view_3d = gl.GLViewWidget()
         self.view_3d.setBackgroundColor('w')
-        
+
         # Main opaque surface
         self.surface_3d = gl.GLSurfacePlotItem(
             x=np.array([0, 1]), y=np.array([0, 1]), z=np.zeros((2, 2)),
             computeNormals=False, smooth=False, drawEdges=False, glOptions='opaque'
         )
         self.view_3d.addItem(self.surface_3d)
-        
+
         # Black wireframe overlaid on the surface
-        self.grid_lines = gl.GLLinePlotItem(pos=np.zeros((2, 3)), color=(0, 0, 0, 0.6), mode='lines', glOptions='opaque')
+        self.grid_lines = gl.GLLinePlotItem(
+            pos=np.zeros((2, 3)), color=(0, 0, 0, 0.6), mode="lines", glOptions="opaque"
+        )
         self.view_3d.addItem(self.grid_lines)
-        
+
         # Dark borders for the back panes
-        self.pane_borders = gl.GLLinePlotItem(pos=np.zeros((2, 3)), color=(0, 0, 0, 0.8), mode='lines', glOptions='opaque')
+        self.pane_borders = gl.GLLinePlotItem(
+            pos=np.zeros((2, 3)), color=(0, 0, 0, 0.8), mode="lines", glOptions="opaque"
+        )
         self.view_3d.addItem(self.pane_borders)
 
         # Solid light gray background panes
@@ -61,29 +65,40 @@ class PyQtGraphCanvas(QWidget):
         self.view_3d.addItem(self.solid_panes)
 
         # White grid lines on the background panes
-        self.pane_grids = gl.GLLinePlotItem(pos=np.zeros((2, 3)), color=(1.0, 1.0, 1.0, 1.0), mode='lines', glOptions='opaque')
+        self.pane_grids = gl.GLLinePlotItem(
+            pos=np.zeros((2, 3)), color=(1.0, 1.0, 1.0, 1.0), mode="lines", glOptions="opaque"
+        )
         self.view_3d.addItem(self.pane_grids)
-        
+
         self.axis_labels = []
         self.stack.addWidget(self.view_3d)
 
     def _setup_2d_scene(self):
         """Initializes the standard 2D plot widget."""
         self.view_2d = pg.PlotWidget()
-        self.plot_curve = self.view_2d.plot(pen=pg.mkPen('b', width=2), symbol='o', symbolBrush='b', symbolSize=6)
+        self.plot_curve = self.view_2d.plot(
+            pen=pg.mkPen("b", width=2), symbol="o", symbolBrush="b", symbolSize=6
+        )
         self.view_2d.showGrid(x=True, y=True, alpha=0.3)
         self.view_2d.setBackground('w')
         self.view_2d.getAxis('bottom').setPen(pg.mkPen('k'))
         self.view_2d.getAxis('left').setPen(pg.mkPen('k'))
         self.stack.addWidget(self.view_2d)
 
-    def draw_3d(self, x: np.ndarray, y: np.ndarray, z: np.ndarray, axis_x: np.ndarray = None, axis_y: np.ndarray = None):
+    def draw_3d(
+        self,
+        x: np.ndarray,
+        y: np.ndarray,
+        z: np.ndarray,
+        axis_x: np.ndarray = None,
+        axis_y: np.ndarray = None,
+    ):
         """
-        Renders the 3D surface plot, applying data normalization, 
+        Renders the 3D surface plot, applying data normalization,
         X-axis data flipping, and dynamic bounding boxes.
         """
         self.stack.setCurrentIndex(0)
-        
+
         # Z normalization for color mapping and visual scaling
         z_transposed = z.T
         z_min, z_max = z_transposed.min(), z_transposed.max()
@@ -96,7 +111,7 @@ class PyQtGraphCanvas(QWidget):
         # Flip X-axis data for correct visual orientation without inverting the coordinate system
         z_plot = z_visual[::-1, :]
         z_norm_plot = z_norm[::-1, :]
-        
+
         # Use actual Map axis values if provided, otherwise default to indices
         x_labels = axis_x[::-1] if axis_x is not None else x[::-1]
         y_labels = axis_y if axis_y is not None else y
@@ -105,7 +120,7 @@ class PyQtGraphCanvas(QWidget):
         c_x = x.mean()
         c_y = y.mean()
         c_z = z_plot.mean()
-        
+
         x_centered = x - c_x
         y_centered = y - c_y
         z_centered = z_plot - c_z
@@ -114,11 +129,11 @@ class PyQtGraphCanvas(QWidget):
         colors[..., 3] = 1.0  # Force 100% opacity
 
         self.surface_3d.setData(x=x_centered, y=y_centered, z=z_centered, colors=colors.reshape(-1, 4))
-        
+
         # Construct surface grid (black lines)
         visual_z_span = z_centered.max() - z_centered.min()
-        z_offset = visual_z_span * 0.002 
-        
+        z_offset = visual_z_span * 0.002
+
         lines_pos = []
         for i in range(len(y_centered)):
             for j in range(len(x_centered)-1):
@@ -128,16 +143,19 @@ class PyQtGraphCanvas(QWidget):
             for i in range(len(y_centered)-1):
                 lines_pos.append([x_centered[j], y_centered[i], z_centered[j, i] + z_offset])
                 lines_pos.append([x_centered[j], y_centered[i+1], z_centered[j, i+1] + z_offset])
-                
+
         if lines_pos:
-            self.grid_lines.setData(pos=np.array(lines_pos, dtype=np.float32), color=(0.0, 0.0, 0.0, 0.7), width=1.0, mode='lines')
+            self.grid_lines.setData(
+                pos=np.array(lines_pos, dtype=np.float32),
+                color=(0.0, 0.0, 0.0, 0.7), width=1.0, mode="lines",
+            )
 
         # Define bounding box dimensions
         xmin, xmax = x_centered.min(), x_centered.max()
         ymin, ymax = y_centered.min(), y_centered.max()
         zvmin, zvmax = z_centered.min(), z_centered.max()
 
-        # Padding expands the grid on the front, right, and top. 
+        # Padding expands the grid on the front, right, and top.
         # Left and Back are flush with the figure boundaries.
         pad_x = (xmax - xmin) * 0.12
         pad_y = (ymax - ymin) * 0.12
@@ -159,42 +177,54 @@ class PyQtGraphCanvas(QWidget):
             [px_min, py_min, pz_min], [px_min, py_min, pz_max],
             [px_min, py_min, pz_max], [px_min, py_max, pz_max]
         ]
-        self.pane_borders.setData(pos=np.array(border_segments, dtype=np.float32), color=(0.0, 0.0, 0.0, 0.8), width=1.5, mode='lines')
+        self.pane_borders.setData(
+            pos=np.array(border_segments, dtype=np.float32),
+            color=(0.0, 0.0, 0.0, 0.8), width=1.5, mode="lines",
+        )
 
         # Solid gray background panes (Floor, Back Wall, Left Wall)
         verts = np.array([
-            [px_min, py_min, pz_min], [px_max, py_min, pz_min], [px_max, py_max, pz_min], [px_min, py_max, pz_min], 
-            [px_min, py_max, pz_min], [px_max, py_max, pz_min], [px_max, py_max, pz_max], [px_min, py_max, pz_max], 
-            [px_min, py_min, pz_min], [px_min, py_max, pz_min], [px_min, py_max, pz_max], [px_min, py_min, pz_max]  
+            # Floor
+            [px_min, py_min, pz_min], [px_max, py_min, pz_min],
+            [px_max, py_max, pz_min], [px_min, py_max, pz_min],
+            # Back wall
+            [px_min, py_max, pz_min], [px_max, py_max, pz_min],
+            [px_max, py_max, pz_max], [px_min, py_max, pz_max],
+            # Left wall
+            [px_min, py_min, pz_min], [px_min, py_max, pz_min],
+            [px_min, py_max, pz_max], [px_min, py_min, pz_max],
         ])
         faces = np.array([
             [0, 1, 2], [0, 2, 3],
             [4, 5, 6], [4, 6, 7],
             [8, 9, 10], [8, 10, 11]
         ])
-        colors_mesh = np.ones((6, 4), dtype=np.float32) * 0.94  
-        colors_mesh[:, 3] = 1.0  
+        colors_mesh = np.ones((6, 4), dtype=np.float32) * 0.94
+        colors_mesh[:, 3] = 1.0
         self.solid_panes.setMeshData(vertexes=verts, faces=faces, faceColors=colors_mesh)
 
         # White grid drawn over the gray panes
-        eps = max_xy * 0.001 
+        eps = max_xy * 0.001
         ze = (pz_max - pz_min) * 0.001
         pane_lines = []
-        
+
         num_z_ticks = 8
         z_ticks_vis = np.linspace(pz_min, pz_max, num_z_ticks)
 
         for xv in x_centered:
-            pane_lines.extend([[xv, py_min+eps, pz_min+ze], [xv, py_max-eps, pz_min+ze]]) 
-            pane_lines.extend([[xv, py_max-eps, pz_min+ze], [xv, py_max-eps, pz_max-ze]]) 
+            pane_lines.extend([[xv, py_min+eps, pz_min+ze], [xv, py_max-eps, pz_min+ze]])
+            pane_lines.extend([[xv, py_max-eps, pz_min+ze], [xv, py_max-eps, pz_max-ze]])
         for yv in y_centered:
-            pane_lines.extend([[px_min+eps, yv, pz_min+ze], [px_max-eps, yv, pz_min+ze]]) 
-            pane_lines.extend([[px_min+eps, yv, pz_min+ze], [px_min+eps, yv, pz_max-ze]]) 
+            pane_lines.extend([[px_min+eps, yv, pz_min+ze], [px_max-eps, yv, pz_min+ze]])
+            pane_lines.extend([[px_min+eps, yv, pz_min+ze], [px_min+eps, yv, pz_max-ze]])
         for zv in z_ticks_vis:
-            pane_lines.extend([[px_min+eps, py_max-eps, zv], [px_max-eps, py_max-eps, zv]]) 
-            pane_lines.extend([[px_min+eps, py_min+eps, zv], [px_min+eps, py_max-eps, zv]]) 
+            pane_lines.extend([[px_min+eps, py_max-eps, zv], [px_max-eps, py_max-eps, zv]])
+            pane_lines.extend([[px_min+eps, py_min+eps, zv], [px_min+eps, py_max-eps, zv]])
 
-        self.pane_grids.setData(pos=np.array(pane_lines, dtype=np.float32), color=(0.7, 0.7, 0.7, 0.7), width=1.0, mode='lines')
+        self.pane_grids.setData(
+            pos=np.array(pane_lines, dtype=np.float32),
+            color=(0.7, 0.7, 0.7, 0.7), width=1.0, mode="lines",
+        )
 
         # Axis labeling
         for lbl in self.axis_labels:
@@ -208,25 +238,29 @@ class PyQtGraphCanvas(QWidget):
 
         off_x = (px_max - px_min) * 0.04
         off_y = (py_max - py_min) * 0.04
-        
+
         # X-Axis: Drawn every 2 units, mapped to flipped x-labels
-        for v_real, v_vis in zip(x_labels[::2], x_centered[::2]):
+        for v_real, v_vis in zip(x_labels[::2], x_centered[::2], strict=False):
             # If the v_real is a float/int, we can format it. If already string, print directly.
-            try: text_val = f"{float(v_real):.0f}"
-            except (ValueError, TypeError): text_val = str(v_real)
+            try:
+                text_val = f"{float(v_real):.0f}"
+            except (ValueError, TypeError):
+                text_val = str(v_real)
             add_text_item(v_vis, py_min - off_y, pz_min, text_val)
         add_text_item(0, py_min - off_y * 2.5, pz_min, "X Axis")
 
         # Y-Axis: Drawn every 2 units
-        for v_real, v_vis in zip(y_labels[::2], y_centered[::2]):
-            try: text_val = f"{float(v_real):.0f}"
-            except (ValueError, TypeError): text_val = str(v_real)
+        for v_real, v_vis in zip(y_labels[::2], y_centered[::2], strict=False):
+            try:
+                text_val = f"{float(v_real):.0f}"
+            except (ValueError, TypeError):
+                text_val = str(v_real)
             add_text_item(px_max + off_x, v_vis, pz_min, text_val)
         add_text_item(px_max + off_x * 2.5, 0, pz_min, "Y Axis")
 
         # Z-Axis: Linear mapping
         z_ticks_real = np.linspace(z_min, z_max, num_z_ticks)
-        for v_real, v_vis in zip(z_ticks_real, z_ticks_vis):
+        for v_real, v_vis in zip(z_ticks_real, z_ticks_vis, strict=False):
             add_text_item(px_max + off_x, py_max + off_y, v_vis, f"{v_real:.0f}")
         add_text_item(px_max + off_x, py_max + off_y, pz_max + off_x * 1.5, "Z Data")
 

@@ -148,10 +148,15 @@ class DensoViewerApp(QMainWindow):
         super().closeEvent(event)
 
     def eventFilter(self, obj, event):
-        if event.type() == QEvent.Type.Wheel and self.view_mode is ViewMode.PLOT:
-            if getattr(self, "canvas", None) is not None and self.canvas.underMouse():
-                self.canvas.wheelEvent(event)
-                return True
+        wheel_over_canvas = (
+            event.type() == QEvent.Type.Wheel
+            and self.view_mode is ViewMode.PLOT
+            and getattr(self, "canvas", None) is not None
+            and self.canvas.underMouse()
+        )
+        if wheel_over_canvas:
+            self.canvas.wheelEvent(event)
+            return True
         return super().eventFilter(obj, event)
 
     def _startup_binary_check(self):
@@ -777,10 +782,7 @@ class DensoViewerApp(QMainWindow):
 
         text = item.text().strip()
         try:
-            if meta["display_hex"]:
-                value = int(text, 16)
-            else:
-                value = float(text)
+            value = int(text, 16) if meta["display_hex"] else float(text)
         except ValueError:
             QMessageBox.warning(
                 self,
@@ -876,7 +878,8 @@ class DensoViewerApp(QMainWindow):
         if len(selected) <= 1:
             existing = self._existing_custom_tag_at(address)
             if existing:
-                stored = self.data_manager.hexdump_tags.get(existing) or self.data_manager.tags.get(existing, {})
+                stored = (self.data_manager.hexdump_tags.get(existing)
+                          or self.data_manager.tags.get(existing, {}))
                 if stored:
                     base_addr_hex = existing
                     chunks = stored.get("chunks") or [(int(existing, 16), stored.get("length", 1))]

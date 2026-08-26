@@ -72,10 +72,10 @@ def writes_arg_register(instruction):
         results = instruction.getResultObjects()
     except JavaException:
         return False
-    for item in results:
-        if isinstance(item, Register) and item.getName().lower() == ARG_REGISTER:
-            return True
-    return False
+    return any(
+        isinstance(item, Register) and item.getName().lower() == ARG_REGISTER
+        for item in results
+    )
 
 
 def literal_targets(instruction):
@@ -277,8 +277,7 @@ def infer_widths(results):
 def write_csv(path, results, is_3d):
     if not path.endswith(".csv"):
         path += ".csv"
-    handle = open(path, "w")
-    try:
+    with open(path, "w") as handle:
         if is_3d:
             handle.write("Call_Site_Addr,Struct_Addr,Size_X,Size_Y,Axis_X_Addr,"
                          "Axis_Y_Addr,Data_Addr,Inferred_Width\n")
@@ -293,8 +292,6 @@ def write_csv(path, results, is_3d):
                 handle.write("{:08X},{:08X},{},{:08X},{:08X},{}\n".format(
                     entry["call_site"], entry["struct"], entry["size_x"],
                     entry["ptr_x"], entry["data"], entry["width"]))
-    finally:
-        handle.close()
     print("Saved {} rows to {}".format(len(results), path))
 
 

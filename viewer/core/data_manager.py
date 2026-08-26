@@ -201,7 +201,8 @@ class DataManager:
             return False
         if start_addr is None or start_addr < 0 or start_addr + size > len(self._modified_bin_data):
             return False
-        return self._bin_data_cache[start_addr:start_addr + size] != self._modified_bin_data[start_addr:start_addr + size]
+        end = start_addr + size
+        return self._bin_data_cache[start_addr:end] != self._modified_bin_data[start_addr:end]
 
     def apply_edit(self, address, new_val, fmt):
         """Write one value at ``address``. Returns ``(True, "")`` or ``(False, why)``."""
@@ -341,15 +342,21 @@ class DataManager:
                 df["Data_Addr"] = ""
 
         if "Struct_Addr" not in df.columns:
-            df["Struct_Addr"] = df["Wrapper_Addr"] if map_type == "potential" and "Wrapper_Addr" in df.columns else ""
+            legacy = map_type == "potential" and "Wrapper_Addr" in df.columns
+            df["Struct_Addr"] = df["Wrapper_Addr"] if legacy else ""
         if "Call_Site_Addr" not in df.columns:
-            df["Call_Site_Addr"] = df["Wrapper_Addr"] if map_type != "potential" and "Wrapper_Addr" in df.columns else ""
+            legacy = map_type != "potential" and "Wrapper_Addr" in df.columns
+            df["Call_Site_Addr"] = df["Wrapper_Addr"] if legacy else ""
 
         for column in ("Size_X", "Size_Y", "Axis_X_Addr", "Axis_Y_Addr"):
             if column not in df.columns:
                 df[column] = "1" if column.startswith("Size") else ""
 
-        for column in ("Data_Addr", "Struct_Addr", "Call_Site_Addr", "Axis_X_Addr", "Axis_Y_Addr", "Wrapper_Addr"):
+        address_columns = (
+            "Data_Addr", "Struct_Addr", "Call_Site_Addr",
+            "Axis_X_Addr", "Axis_Y_Addr", "Wrapper_Addr",
+        )
+        for column in address_columns:
             if column in df.columns:
                 df[column] = df[column].map(_clean_addr)
 
@@ -528,10 +535,7 @@ class DataManager:
         """``(z_format, axis_format)`` for a row, honouring per-map overrides."""
         custom = self.custom_settings_for(row)
         map_type = row.get("Map_Type", "3d")
-        if map_type == "2d":
-            default_z = self.z_format_2d
-        else:
-            default_z = self.z_format_3d
+        default_z = self.z_format_2d if map_type == "2d" else self.z_format_3d
         return custom.get("z_format", default_z), custom.get("ax_format", self.ax_format)
 
     def read_map(self, row, as_2d=False):
@@ -654,7 +658,9 @@ class DataManager:
             array = np.pad(array, (0, wanted - len(array)), "constant")
 
         matrix = array.reshape((size_y, size_x))
-        return matrix, np.arange(size_x, dtype=float), np.arange(size_y, dtype=float), size_y, size_x, addr_hex
+        axis_x = np.arange(size_x, dtype=float)
+        axis_y = np.arange(size_y, dtype=float)
+        return matrix, axis_x, axis_y, size_y, size_x, addr_hex
 
     @staticmethod
     def _parse_chunks(chunks_str):
@@ -773,7 +779,7 @@ class DataManager:
         if not os.path.exists(file_path):
             return False, f"File not found: {file_path}"
         try:
-            with open(file_path, "r", encoding="utf-8") as handle:
+            with open(file_path, encoding="utf-8") as handle:
                 data = json.load(handle)
         except (OSError, json.JSONDecodeError) as exc:
             return False, f"Could not read project: {exc}"
@@ -812,9 +818,7 @@ class DataManager:
 
         warnings = []
         ok, message = self.load_binary()
-        if not ok:
-            warnings.append(message)
-        elif message:
+        if not ok or message:
             warnings.append(message)
 
         diff = data.get("bin_diff") or {}
@@ -905,7 +909,8 @@ class DataManager:
                     if chunks:
                         first = True
                         for chunk_start, chunk_len in chunks:
-                            if paint(chunk_start, chunk_len, (255, 165, 0), label if first else "", chunk_start):
+                            chunk_label = label if first else ""
+                            if paint(chunk_start, chunk_len, (255, 165, 0), chunk_label, chunk_start):
                                 first = False
                     else:
                         paint(address, int(data.get("length", 1) or 1), (255, 165, 0), label, address)
@@ -939,9 +944,11 @@ class DataManager:
         except (TypeError, ValueError):
             return False
 
-        if parse_address(row.get("Axis_X_Addr", "")) is not None:
-            if not is_monotonic(self.read_axis(row.get("Axis_X_Addr", ""), size_x, ax_format)):
-                return False
+        axis_x_addr = row.get("Axis_X_Addr", "")
+        if parse_address(axis_x_addr) is not None and not is_monotonic(
+            self.read_axis(axis_x_addr, size_x, ax_format)
+        ):
+            return False
 
         if row.get("Map_Type") == "3d" and parse_address(row.get("Axis_Y_Addr", "")) is not None:
             try:

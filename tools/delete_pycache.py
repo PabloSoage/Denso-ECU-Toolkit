@@ -11,7 +11,7 @@ def delete_pycache(base_path: str) -> None:
     Args:
         base_path (str): The root directory path to search for __pycache__ folders.
     """
-    for root, dirs, files in os.walk(base_path):
+    for root, dirs, _files in os.walk(base_path):
         # Skip .venv directories
         if ".venv" in root.split(os.sep):
             continue
