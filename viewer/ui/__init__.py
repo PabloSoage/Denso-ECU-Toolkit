@@ -1,1 +1,1 @@
-from .main_window import DensoViewerApp
+"""Qt user interface."""

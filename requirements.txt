@@ -1,7 +1,10 @@
-numpy
-pandas
-matplotlib
-PyQt6
-
-pyqtgraph
-PyOpenGL
+# Runtime dependencies. Lower bounds only — see pyproject.toml, which is the
+# source of truth. Pinned floors matter here: matplotlib removed cm.get_cmap()
+# in 3.9 and the PyQtGraph renderer needs the colormap registry that landed in
+# 3.5, while the enum/dataclass usage needs a reasonably current numpy/pandas.
+numpy>=1.24
+pandas>=2.0
+matplotlib>=3.8
+PyQt6>=6.5
+pyqtgraph>=0.13
+PyOpenGL>=3.1

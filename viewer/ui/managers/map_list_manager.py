@@ -1,27 +1,44 @@
-from PyQt6.QtWidgets import QListWidgetItem
+"""Populates and filters the map list on the left panel."""
+
 from PyQt6.QtGui import QColor
+from PyQt6.QtWidgets import QListWidgetItem
+
+from ...core.data_manager import parse_address
+
+MODIFIED_COLOR = QColor(255, 0, 0)
+
+TYPE_PREFIX = {"3d": "3D Map", "2d": "2D Crv", "tags": "HexTag"}
+
 
 class MapListManager:
     def __init__(self, main_window):
         self.main_window = main_window
 
+    # ------------------------------------------------------------------
+    # Tag filter menu
+    # ------------------------------------------------------------------
+
     def update_tag_filter_menu(self):
-        if not hasattr(self.main_window, 'tag_filter_menu'): return
-        self.main_window.tag_filter_menu.clear()
+        mw = self.main_window
+        menu = getattr(mw, "tag_filter_menu", None)
+        if menu is None:
+            return
+        menu.clear()
+
+        df = mw.data_manager.df
         all_tags = set()
-        
-        if not self.main_window.data_manager.df.empty and 'Tag' in self.main_window.data_manager.df.columns:
-            for tag_str in self.main_window.data_manager.df['Tag'].fillna(''):
-                for t in str(tag_str).split(','):
-                    t = t.strip()
-                    if t:
-                        all_tags.add(t)
-                
-        for t in sorted(all_tags):
-            action = self.main_window.tag_filter_menu.addAction(t)
+        if not df.empty and "Tag" in df.columns:
+            for tag_str in df["Tag"].fillna(""):
+                all_tags.update(t.strip() for t in str(tag_str).split(",") if t.strip())
+
+        # Drop filters whose tag no longer exists, or the list silently empties.
+        mw.active_tag_filters &= all_tags
+
+        for tag in sorted(all_tags):
+            action = menu.addAction(tag)
             action.setCheckable(True)
-            action.setChecked(t in self.main_window.active_tag_filters)
-            action.triggered.connect(lambda checked, tag=t: self.on_tag_filter_toggled(tag, checked))
+            action.setChecked(tag in mw.active_tag_filters)
+            action.triggered.connect(lambda checked, t=tag: self.on_tag_filter_toggled(t, checked))
 
     def on_tag_filter_toggled(self, tag, checked):
         if checked:
@@ -30,106 +47,100 @@ class MapListManager:
             self.main_window.active_tag_filters.discard(tag)
         self.update_list()
 
-    def on_map_type_changed(self, idx):
-        if idx == 0: new_mode = '3d'
-        elif idx == 1: new_mode = '2d'
-        elif idx == 2: new_mode = 'tags'
-        else: new_mode = 'all'
-        
-        if new_mode != self.main_window.map_mode:
-            self.main_window.map_mode = new_mode
-            if self.main_window.btn_main_mode.text() == "Mode: Map Viewer":
-                self.main_window.btn_hex_plot_mode.setVisible(self.main_window.map_mode == 'tags')
-            self.main_window.btn_edit_dims.setVisible(self.main_window.map_mode in ('tags', 'all'))
-            self.main_window.load_data()
+    # ------------------------------------------------------------------
+    # List
+    # ------------------------------------------------------------------
 
     def update_list(self):
-        self.main_window.map_listbox.clear()
-        self.main_window.filtered_indices = []
-        if self.main_window.data_manager.df.empty: return
-        
-        search_term = self.main_window.search_box.text().lower()
-        
-        use_smart_filter = getattr(self.main_window, 'cb_smart_filter', None) and self.main_window.cb_smart_filter.isChecked()
+        mw = self.main_window
+        mw.map_listbox.clear()
+        mw.filtered_indices = []
 
-        for idx, row in self.main_window.data_manager.df.iterrows():
-            mtype = row.get('Map_Type', self.main_window.map_mode)
-            
-            # For 3D and Hexdump Tags, use Map_Z_Addr as the title. For 2D, Curve_Data_Addr
-            addr_col = 'Map_Z_Addr' if mtype in ('3d', 'tags') else 'Curve_Data_Addr'
-            addr = str(row.get(addr_col, '')).strip()
-            tag = str(row.get('Tag', '')).strip()
+        df = mw.data_manager.df
+        if df.empty:
+            return
 
-            # Beautiful label indicating type
-            prefix = {"3d": "3D Map", "2d": "2D Crv", "tags": "HexTag"}.get(mtype, "Map")
-            
-            display_text = f"{prefix} {idx+1}: {addr}"
+        search_term = mw.search_box.text().strip().lower()
+        smart_filter = mw.cb_smart_filter.isChecked() if hasattr(mw, "cb_smart_filter") else False
+        active_filters = mw.active_tag_filters
+
+        hidden_by_filter = 0
+
+        for idx, row in df.iterrows():
+            map_type = row.get("Map_Type", mw.map_mode.value)
+            address = str(row.get("Data_Addr", "")).strip()
+            tag = str(row.get("Tag", "")).strip()
+
+            if search_term and search_term not in address.lower() and search_term not in tag.lower():
+                continue
+
+            if active_filters:
+                row_tags = {t.strip() for t in tag.split(",") if t.strip()}
+                if not active_filters.issubset(row_tags):
+                    continue
+
+            # Checked last: it decodes axes, which is by far the costliest test.
+            if smart_filter and not mw.data_manager.check_map_axes(row):
+                hidden_by_filter += 1
+                continue
+
+            label = f"{TYPE_PREFIX.get(map_type, 'Map')} {idx + 1}: {address}"
             if tag:
-                display_text += f" [{tag}]"
+                label += f" [{tag}]"
 
-            term_match = (search_term in addr.lower() or search_term in tag.lower())
-            
-            tag_match = True
-            if self.main_window.active_tag_filters:
-                row_tags = [t.strip() for t in tag.split(',') if t.strip()]
-                for f_tag in self.main_window.active_tag_filters:
-                    if f_tag not in row_tags:
-                        tag_match = False
-                        break
-                        
-            if term_match and tag_match:
-                item = QListWidgetItem(display_text)
+            item = QListWidgetItem(label)
+            if self._is_modified(row):
+                item.setForeground(MODIFIED_COLOR)
+            mw.map_listbox.addItem(item)
+            mw.filtered_indices.append(idx)
 
-                if use_smart_filter:
-                    # If the axes are not monotonic, we skip this map (it's noise)
-                    if not self.main_window.data_manager.check_map_axes(row):
-                        continue
-                
-                # Check for modifications
-                try:
-                    is_modified = False
-                    if mtype == '3d':
-                        sz_h_row = str(row.get('Wrapper_Addr', '')).strip()
-                        cst = self.main_window.data_manager.custom_map_settings.get(sz_h_row, {})
-                        fmt = cst.get('z_format', self.main_window.data_manager.z_format_3d)
-                        fc = fmt[-1]
-                        bpv = 4 if fc.lower() in ('f','i','l') else (2 if fc.lower() == 'h' else 1)
-                        sx, sy = int(row.get('Size_X', 1)), int(row.get('Size_Y', 1))
-                        addr_int = int(str(row.get('Map_Z_Addr', '0')).strip(), 16)
-                        length = sx * sy * bpv
-                        is_modified = self.main_window.data_manager.is_map_modified(addr_int, length)
-                    elif mtype == '2d':
-                        sz_h_row = str(row.get('Wrapper_Addr', '')).strip()
-                        cst = self.main_window.data_manager.custom_map_settings.get(sz_h_row, {})
-                        fmt = cst.get('z_format', self.main_window.data_manager.z_format_2d)
-                        fc = fmt[-1]
-                        bpv = 4 if fc.lower() in ('f','i','l') else (2 if fc.lower() == 'h' else 1)
-                        sx = int(row.get('Size_X', 1))
-                        addr_int = int(str(row.get('Curve_Data_Addr', '0')).strip(), 16)
-                        length = sx * bpv
-                        is_modified = self.main_window.data_manager.is_map_modified(addr_int, length)
-                    if is_modified:
-                        item.setForeground(QColor(255, 0, 0))
-                except: pass
-                
-                self.main_window.map_listbox.addItem(item)
-                self.main_window.filtered_indices.append(idx)
+        self._report(len(df), hidden_by_filter)
 
-        if self.main_window.filtered_indices:
+        if mw.filtered_indices:
             self.sync_listbox_selection()
 
+    def _report(self, total, hidden):
+        """Say how many rows the filters removed, rather than just showing fewer."""
+        mw = self.main_window
+        shown = len(mw.filtered_indices)
+        if shown == total:
+            mw.status_lbl.setText(f"{total} map(s).")
+        elif hidden:
+            mw.status_lbl.setText(
+                f"{shown} of {total} map(s) — {hidden} hidden by the axis filter."
+            )
+        else:
+            mw.status_lbl.setText(f"{shown} of {total} map(s) after filtering.")
+
+    def _is_modified(self, row):
+        dm = self.main_window.data_manager
+        address = parse_address(row.get("Data_Addr", ""))
+        if address is None:
+            return False
+        length = dm.map_byte_length(row)
+        if not length:
+            return False
+        return dm.is_map_modified(address, length)
+
+    # ------------------------------------------------------------------
+    # Selection
+    # ------------------------------------------------------------------
+
     def on_list_select(self):
-        items = self.main_window.map_listbox.selectedIndexes()
-        if items:
-            visual_idx = items[0].row()
-            if visual_idx < len(self.main_window.filtered_indices):
-                self.main_window.data_manager.current_index = self.main_window.filtered_indices[visual_idx]
-                self.main_window.draw_map()
+        mw = self.main_window
+        selected = mw.map_listbox.selectedIndexes()
+        if not selected:
+            return
+        visual_index = selected[0].row()
+        if 0 <= visual_index < len(mw.filtered_indices):
+            mw.data_manager.current_index = mw.filtered_indices[visual_index]
+            mw.draw_map()
 
     def sync_listbox_selection(self):
-        if self.main_window.data_manager.current_index in self.main_window.filtered_indices:
-            vis_idx = self.main_window.filtered_indices.index(self.main_window.data_manager.current_index)
-            # Block signals temporarily to prevent triggering on_list_select
-            self.main_window.map_listbox.blockSignals(True)
-            self.main_window.map_listbox.setCurrentRow(vis_idx)
-            self.main_window.map_listbox.blockSignals(False)
+        mw = self.main_window
+        if mw.data_manager.current_index not in mw.filtered_indices:
+            return
+        visual_index = mw.filtered_indices.index(mw.data_manager.current_index)
+        mw.map_listbox.blockSignals(True)
+        mw.map_listbox.setCurrentRow(visual_index)
+        mw.map_listbox.blockSignals(False)

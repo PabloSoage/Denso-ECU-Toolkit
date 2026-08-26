@@ -1,0 +1,65 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "denso-ecu-toolkit"
+version = "0.2.0"
+description = "Reverse-engineering toolchain and map visualiser for Denso SH705x ECUs"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "GPL-3.0-or-later" }
+authors = [{ name = "Pablo Soage Rodas" }]
+keywords = ["ecu", "denso", "sh705x", "ghidra", "reverse-engineering", "calibration"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: X11 Applications :: Qt",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)",
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering",
+]
+
+dependencies = [
+    "numpy>=1.24",
+    "pandas>=2.0",
+    "matplotlib>=3.8",
+    "PyQt6>=6.5",
+    "pyqtgraph>=0.13",
+    "PyOpenGL>=3.1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4",
+    "ruff>=0.5",
+]
+
+[project.gui-scripts]
+denso-viewer = "viewer.app:main"
+
+[project.urls]
+Homepage = "https://github.com/PabloSoage/Denso-ECU-Toolkit"
+
+[tool.setuptools.packages.find]
+include = ["viewer*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 110
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "C4", "SIM"]
+ignore = [
+    # The Qt panels legitimately assign attributes onto the main window.
+    "B010",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Ghidra scripts run under Jython 2.7 and rely on globals the API injects
+# (toAddr, askFile, getReferencesTo, getCurrentProgram, ...).
+"Scripts/*.py" = ["F821", "UP"]

@@ -1,7 +1,36 @@
-from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QLabel, QCheckBox, 
-                             QGroupBox, QFormLayout, QComboBox, QDoubleSpinBox, 
-                             QDialogButtonBox, QTabWidget, QWidget, QHBoxLayout,
-                             QRadioButton, QLineEdit, QPushButton, QFileDialog)
+"""Global settings: file paths, data formats, maths and view preferences."""
+
+from PyQt6.QtWidgets import (
+    QCheckBox,
+    QComboBox,
+    QDialog,
+    QDialogButtonBox,
+    QDoubleSpinBox,
+    QFileDialog,
+    QFormLayout,
+    QGroupBox,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QMessageBox,
+    QPushButton,
+    QRadioButton,
+    QTabWidget,
+    QVBoxLayout,
+    QWidget,
+)
+
+from ...core import formats
+from ...core.state import (
+    AppMode,
+    HexPlotPosition,
+    MapMode,
+    RotationMode,
+    SparklineStyle,
+)
+
+SIZE_CHOICES = list(formats.SIZE_LABELS)
+
 
 class SettingsDialog(QDialog):
     def __init__(self, main_window):
@@ -9,343 +38,314 @@ class SettingsDialog(QDialog):
         self.main_window = main_window
         self.data_manager = main_window.data_manager
         self.init_ui()
-        
+
+    # ------------------------------------------------------------------
+
     def init_ui(self):
-        
         self.setWindowTitle("Settings")
-        self.resize(450, 480)
+        self.resize(470, 520)
         layout = QVBoxLayout(self)
-        
+
         tabs = QTabWidget()
+        tabs.addTab(self._files_tab(), "Files & Mode")
+        tabs.addTab(self._format_tab(), "Format")
+        tabs.addTab(self._view_tab(), "Math & View")
         layout.addWidget(tabs)
-        
-        # TAB 1: FILES & MODE
-        tab_files = QWidget()
-        vbox_f = QVBoxLayout(tab_files)
-        
-        gb_mode = QGroupBox("Visualization Mode")
-        ly_mode = QHBoxLayout()
-                
-        gb_engine = QGroupBox("Render Engine")
-        ly_engine = QHBoxLayout()
-        self.main_window.rb_mpl = QRadioButton("Matplotlib (Slow, Hover)")
-        self.main_window.rb_pg = QRadioButton("PyQtGraph (Fast, No Hover)")
-        if self.main_window.render_engine == 'matplotlib': self.main_window.rb_mpl.setChecked(True)
-        else: self.main_window.rb_pg.setChecked(True)
-        ly_engine.addWidget(self.main_window.rb_mpl)
-        ly_engine.addWidget(self.main_window.rb_pg)
-        gb_engine.setLayout(ly_engine)
-        vbox_f.addWidget(gb_engine)
-        
-        rb_m1 = QRadioButton("3D Maps")
-        rb_m2 = QRadioButton("2D Curves")
-        rb_m3 = QRadioButton("Hexdump Tags")
-        rb_m4 = QRadioButton("All (Dropdown)")
-        
-        # We need a new state variable to know if we are in 'All' mode or a forced restriction from settings
-        # Let's say if the dropdown is visible, we are in 'All' mode. By default let's use the combo state.
-        if self.main_window.cmb_map_type.isVisible():
-            rb_m4.setChecked(True)
-        elif self.main_window.map_mode == 'tags':
-            rb_m3.setChecked(True)
-        elif self.main_window.map_mode == '2d':
-            rb_m2.setChecked(True)
-        else:
-            rb_m1.setChecked(True)
-            
-        ly_mode.addWidget(rb_m1); ly_mode.addWidget(rb_m2); ly_mode.addWidget(rb_m3); ly_mode.addWidget(rb_m4)
-        gb_mode.setLayout(ly_mode)
-        vbox_f.addWidget(gb_mode)
-        
-        gb_main = QGroupBox("Main Application Mode")
-        ly_main = QHBoxLayout()
-        rb_main_map = QRadioButton("Map Viewer")
-        rb_main_hex = QRadioButton("Hex Dump")
-        rb_main_pot = QRadioButton("Potential Maps")
-        
-        current_mode = self.main_window.btn_main_mode.text()
-        if current_mode == "Mode: Hex Dump": rb_main_hex.setChecked(True)
-        elif current_mode == "Mode: Potential Maps": rb_main_pot.setChecked(True)
-        else: rb_main_map.setChecked(True)
-        
-        ly_main.addWidget(rb_main_map); ly_main.addWidget(rb_main_hex); ly_main.addWidget(rb_main_pot)
-        gb_main.setLayout(ly_main)
-        vbox_f.addWidget(gb_main)
 
-        def add_file_row(parent, label, current_path):
-            lay = QHBoxLayout()
-            lay.addWidget(QLabel(label))
-            le = QLineEdit(current_path)
-            btn = QPushButton("...")
-            btn.setFixedWidth(30)
-            def browse():
-                path, _ = QFileDialog.getOpenFileName(self, "Select File")
-                if path: le.setText(path)
-            btn.clicked.connect(browse)
-            lay.addWidget(le)
-            lay.addWidget(btn)
-            parent.addLayout(lay)
-            return le
-            
-        vbox_f.addWidget(QLabel("<b>Paths:</b>"))
-        le_bin = add_file_row(vbox_f, "BIN File:", self.main_window.data_manager.bin_path)
-        le_3d = add_file_row(vbox_f, "3D CSV:", self.main_window.data_manager.csv_3d_path)
-        le_2d = add_file_row(vbox_f, "2D CSV:", self.main_window.data_manager.csv_2d_path)
-        le_dtc = add_file_row(vbox_f, "DTC CSV:", getattr(self.main_window.data_manager, 'csv_dtc_path', ''))
-        le_pot = add_file_row(vbox_f, "Potential CSV:", getattr(self.main_window.data_manager, 'csv_potential_path', 'potential_maps.csv'))
-        vbox_f.addStretch()
-        tabs.addTab(tab_files, "Files & Mode")
-        
-        # TAB 2: FORMAT 
-        tab_fmt = QWidget()
-        vbox_fmt = QVBoxLayout(tab_fmt)
-        
-        def parse_fmt(f_str):
-            if not f_str: return "16-bit", ">", False
-            endian = "<" if "<" in f_str else ">"
-            c = f_str[-1].lower()
-            if c == 'f': size = "Float"
-            elif c == 'b': size = "8-bit"
-            elif c == 'i' or c == 'l': size = "32-bit"
-            else: size = "16-bit" # default H/h
-            signed = f_str[-1].islower()
-            if size == 'Float': signed = True
-            return size, endian, signed
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
 
-        size3, end3, sign3 = parse_fmt(self.main_window.data_manager.z_format_3d)
-        size2, end2, sign2 = parse_fmt(self.main_window.data_manager.z_format_2d)
-        
-        # Determine global values (fallback to 3D if they mismatch)
-        is_little_endian = (end3 == "<")
-        is_signed = sign3
-
-        gb_global = QGroupBox("Global Rules")
-        ly_global = QVBoxLayout()
-        
-        self.main_window.cb_endian = QCheckBox("Little Endian (LoHi) - Uncheck for Big Endian (HiLo)")
-        self.main_window.cb_endian.setChecked(is_little_endian)
-        ly_global.addWidget(self.main_window.cb_endian)
-        
-        self.main_window.cb_signed = QCheckBox("Signed - Uncheck for Unsigned")
-        self.main_window.cb_signed.setChecked(is_signed)
-        ly_global.addWidget(self.main_window.cb_signed)
-        
-        gb_global.setLayout(ly_global)
-        vbox_fmt.addWidget(gb_global)
-
-        gb_sizes = QGroupBox("Data Sizes")
-        ly_sizes = QFormLayout()
-        
-        self.main_window.cmb_3d = QComboBox()
-        self.main_window.cmb_3d.addItems(["8-bit", "16-bit", "32-bit", "Float"])
-        self.main_window.cmb_3d.setCurrentText(size3)
-        ly_sizes.addRow("3D Data Size:", self.main_window.cmb_3d)
-
-        self.main_window.cmb_2d = QComboBox()
-        self.main_window.cmb_2d.addItems(["8-bit", "16-bit", "32-bit", "Float"])
-        self.main_window.cmb_2d.setCurrentText(size2)
-        ly_sizes.addRow("2D Data Size:", self.main_window.cmb_2d)
-
-        sz_ax_map = {'b': '8-bit', 'h': '16-bit', 'i': '32-bit', 'f': 'Float'}
-        sz_a_char = self.main_window.data_manager.ax_format.lower() if self.main_window.data_manager.ax_format else 'h'
-        size_a = sz_ax_map.get(sz_a_char, '16-bit')
-
-        self.main_window.cmb_ax = QComboBox()
-        self.main_window.cmb_ax.addItems(["8-bit", "16-bit", "32-bit", "Float"])
-        self.main_window.cmb_ax.setCurrentText(size_a)
-        ly_sizes.addRow("Axis Size:", self.main_window.cmb_ax)
-        
-        gb_sizes.setLayout(ly_sizes)
-        vbox_fmt.addWidget(gb_sizes)
-
-        vbox_fmt.addStretch()
-        tabs.addTab(tab_fmt, "Format")
-        
-        # TAB 3: MATH, VIEW & CONTROLS
-        tab_math = QWidget()
-        vbox_m = QVBoxLayout(tab_math)
-        
-        gb_math = QGroupBox("Math (Applied to Z/Curve)")
-        form_m = QFormLayout()
-        
-        spin_f_3d = QDoubleSpinBox()
-        spin_f_3d.setDecimals(5)
-        spin_f_3d.setSingleStep(0.001)
-        spin_f_3d.setRange(-10000, 10000)
-        spin_f_3d.setValue(self.main_window.factor_z_3d)
-        
-        spin_o_3d = QDoubleSpinBox()
-        spin_o_3d.setRange(-10000, 10000)
-        spin_o_3d.setValue(self.main_window.offset_z_3d)
-        
-        spin_f_2d = QDoubleSpinBox()
-        spin_f_2d.setDecimals(5)
-        spin_f_2d.setSingleStep(0.001)
-        spin_f_2d.setRange(-10000, 10000)
-        spin_f_2d.setValue(self.main_window.factor_z_2d)
-        
-        spin_o_2d = QDoubleSpinBox()
-        spin_o_2d.setRange(-10000, 10000)
-        spin_o_2d.setValue(self.main_window.offset_z_2d)
-        
-        form_m.addRow("Factor 3D:", spin_f_3d)
-        form_m.addRow("Offset 3D:", spin_o_3d)
-        form_m.addRow("Factor 2D:", spin_f_2d)
-        form_m.addRow("Offset 2D:", spin_o_2d)
-        gb_math.setLayout(form_m)
-        vbox_m.addWidget(gb_math)
-        
-        # Table and Hex Settings
-        gb_tbl = QGroupBox("Table & Hex Settings")
-        ly_tbl = QVBoxLayout()
-        self.main_window.cb_hex_f = QCheckBox("Apply Factor/Offset to Hex View (Table)")
-        self.main_window.cb_hex_f.setChecked(self.main_window.apply_factor_to_hex)
-        ly_tbl.addWidget(self.main_window.cb_hex_f)
-        
-        self.main_window.cb_hl_3d = QCheckBox("Highlight 3D Maps in Hex Mode (Blue)")
-        self.main_window.cb_hl_3d.setChecked(self.main_window.highlight_3d)
-        ly_tbl.addWidget(self.main_window.cb_hl_3d)
-        
-        self.main_window.cb_hl_2d = QCheckBox("Highlight 2D Maps in Hex Mode (Green)")
-        self.main_window.cb_hl_2d.setChecked(self.main_window.highlight_2d)
-        ly_tbl.addWidget(self.main_window.cb_hl_2d)
-        
-        self.main_window.cb_hl_custom = QCheckBox("Highlight Custom Tags in Hex Mode (Orange)")
-        self.main_window.cb_hl_custom.setChecked(self.main_window.highlight_custom_tags)
-        ly_tbl.addWidget(self.main_window.cb_hl_custom)
-        
-        self.main_window.cb_hl_custom = QCheckBox("Highlight Custom Tags in Hex Mode (Orange)")
-        self.main_window.cb_hl_custom.setChecked(self.main_window.highlight_custom_tags)
-        ly_tbl.addWidget(self.main_window.cb_hl_custom)
-        
-        ly_spark = QHBoxLayout()
-        ly_spark.addWidget(QLabel("Sparkline Style:"))
-        rb_sp1 = QRadioButton("Bars (WinOLS)")
-        rb_sp2 = QRadioButton("Continuous Line")
-        if self.main_window.sparkline_style == 'Bars': rb_sp1.setChecked(True)
-        else: rb_sp2.setChecked(True)
-        ly_spark.addWidget(rb_sp1); ly_spark.addWidget(rb_sp2)
-        ly_tbl.addLayout(ly_spark)
-        
-        gb_hex_pos = QGroupBox("Hex Dump Plot Position")
-        ly_hex_pos = QHBoxLayout()
-        rb_pos_top = QRadioButton("Top")
-        rb_pos_right = QRadioButton("Right")
-        if self.main_window.hex_plot_position == 'top': rb_pos_top.setChecked(True)
-        else: rb_pos_right.setChecked(True)
-        ly_hex_pos.addWidget(rb_pos_top); ly_hex_pos.addWidget(rb_pos_right)
-        gb_hex_pos.setLayout(ly_hex_pos)
-        ly_tbl.addWidget(gb_hex_pos)
-        
-        gb_tbl.setLayout(ly_tbl)
-        vbox_m.addWidget(gb_tbl)
-        
-        gb_r = QGroupBox("3D Mouse Rotation Mode")
-        ly_r = QVBoxLayout()
-        rb_r1 = QRadioButton("Z-Axis Only (WinOLS Azimuth)")
-        rb_r2 = QRadioButton("WinOLS Style (Azimuth & Tilt)")
-        rb_r3 = QRadioButton("Tilt Only (Elevation)")
-        if self.main_window.rot_mode == 'Z': rb_r1.setChecked(True)
-        elif self.main_window.rot_mode == 'WinOLS': rb_r2.setChecked(True)
-        else: rb_r3.setChecked(True)
-        ly_r.addWidget(rb_r1); ly_r.addWidget(rb_r2); ly_r.addWidget(rb_r3)
-        gb_r.setLayout(ly_r)
-        vbox_m.addWidget(gb_r)
-        
-        vbox_m.addStretch()
-        tabs.addTab(tab_math, "Math & View")
-        
-        btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
-        btns.accepted.connect(self.accept)
-        btns.rejected.connect(self.reject)
-        layout.addWidget(btns)
-        
         if self.exec():
-            # Update engine
-            new_engine = 'matplotlib' if self.main_window.rb_mpl.isChecked() else 'pyqtgraph'
-            engine_changed = (new_engine != self.main_window.render_engine)
-            if engine_changed:
-                self.main_window.render_engine = new_engine
+            self._apply()
 
-            self.main_window.data_manager.bin_path = le_bin.text()
-            self.main_window.data_manager.csv_3d_path = le_3d.text()
-            self.main_window.data_manager.csv_2d_path = le_2d.text()
-            self.main_window.data_manager.csv_dtc_path = le_dtc.text()
-            self.main_window.data_manager.csv_potential_path = le_pot.text()
-            self.main_window.data_manager.load_dtc_csv()
-            
-            # Cambiamos de modo si se ha modificado en las opciones
-            new_target_mode = "Map Viewer"
-            if rb_main_hex.isChecked(): new_target_mode = "Hex Dump"
-            elif rb_main_pot.isChecked(): new_target_mode = "Potential Maps"
-            
-            if self.main_window.btn_main_mode.text() != f"Mode: {new_target_mode}":
-                idx = ['Map Viewer', 'Hex Dump', 'Potential Maps'].index(new_target_mode)
-                prev_mode = ['Map Viewer', 'Hex Dump', 'Potential Maps'][idx - 1]
-                self.main_window.btn_main_mode.setText(f"Mode: {prev_mode}")
-                self.main_window.toggle_main_mode()
-            
-            if rb_m4.isChecked():
-                self.main_window.cmb_map_type.setVisible(True)
-                modes_list = ['3d', '2d', 'tags', 'all']
-                if self.main_window.cmb_map_type.currentIndex() < len(modes_list):
-                    new_mode = modes_list[self.main_window.cmb_map_type.currentIndex()]
-                else:
-                    new_mode = 'all'
+    # ------------------------------------------------------------------
+    # Tabs
+    # ------------------------------------------------------------------
+
+    def _files_tab(self):
+        mw = self.main_window
+        dm = self.data_manager
+
+        tab = QWidget()
+        box = QVBoxLayout(tab)
+
+        engine = QGroupBox("Render Engine")
+        engine_row = QHBoxLayout()
+        self.rb_matplotlib = QRadioButton("Matplotlib (slower, hover tooltips)")
+        self.rb_pyqtgraph = QRadioButton("PyQtGraph + OpenGL (fast, no hover)")
+        self.rb_matplotlib.setChecked(mw.render_engine == "matplotlib")
+        self.rb_pyqtgraph.setChecked(mw.render_engine != "matplotlib")
+        engine_row.addWidget(self.rb_matplotlib)
+        engine_row.addWidget(self.rb_pyqtgraph)
+        engine.setLayout(engine_row)
+        box.addWidget(engine)
+
+        map_type = QGroupBox("Map List Contents")
+        map_row = QHBoxLayout()
+        self.rb_map_modes = {
+            MapMode.THREE_D: QRadioButton("3D Maps"),
+            MapMode.TWO_D: QRadioButton("2D Curves"),
+            MapMode.TAGS: QRadioButton("Hexdump Tags"),
+        }
+        self.rb_map_dropdown = QRadioButton("All (dropdown)")
+        # State comes from the flag, not from whether a combo box happens to be
+        # visible -- which is how this used to be decided.
+        if mw.map_type_dropdown_visible:
+            self.rb_map_dropdown.setChecked(True)
+        else:
+            self.rb_map_modes.get(mw.map_mode, self.rb_map_modes[MapMode.THREE_D]).setChecked(True)
+        for button in self.rb_map_modes.values():
+            map_row.addWidget(button)
+        map_row.addWidget(self.rb_map_dropdown)
+        map_type.setLayout(map_row)
+        box.addWidget(map_type)
+
+        app_mode = QGroupBox("Main Application Mode")
+        app_row = QHBoxLayout()
+        self.rb_app_modes = {mode: QRadioButton(mode.value) for mode in AppMode}
+        self.rb_app_modes[mw.app_mode].setChecked(True)
+        for button in self.rb_app_modes.values():
+            app_row.addWidget(button)
+        app_mode.setLayout(app_row)
+        box.addWidget(app_mode)
+
+        box.addWidget(QLabel("<b>Paths:</b>"))
+        self.le_bin = self._file_row(box, "BIN File:", dm.bin_path, "Binary Files (*.bin);;All Files (*)")
+        self.le_3d = self._file_row(box, "3D CSV:", dm.csv_3d_path, "CSV Files (*.csv)")
+        self.le_2d = self._file_row(box, "2D CSV:", dm.csv_2d_path, "CSV Files (*.csv)")
+        self.le_dtc = self._file_row(box, "DTC CSV:", dm.csv_dtc_path, "CSV Files (*.csv)")
+        self.le_potential = self._file_row(box, "Potential CSV:", dm.csv_potential_path, "CSV Files (*.csv)")
+        box.addStretch()
+        return tab
+
+    def _file_row(self, parent_layout, label, current_path, file_filter):
+        row = QHBoxLayout()
+        row.addWidget(QLabel(label))
+        line = QLineEdit(current_path)
+        browse = QPushButton("...")
+        browse.setFixedWidth(30)
+
+        def pick():
+            path, _ = QFileDialog.getOpenFileName(self, f"Select {label}", "", file_filter)
+            if path:
+                line.setText(path)
+
+        browse.clicked.connect(pick)
+        row.addWidget(line)
+        row.addWidget(browse)
+        parent_layout.addLayout(row)
+        return line
+
+    def _format_tab(self):
+        dm = self.data_manager
+        tab = QWidget()
+        box = QVBoxLayout(tab)
+
+        size_3d, order_3d, signed_3d = formats.describe(dm.z_format_3d)
+        size_2d, _, _ = formats.describe(dm.z_format_2d)
+        size_ax, _, _ = formats.describe(dm.ax_format)
+
+        rules = QGroupBox("Global Rules")
+        rules_box = QVBoxLayout()
+        self.cb_little_endian = QCheckBox("Little Endian (LoHi) — uncheck for Big Endian (HiLo)")
+        self.cb_little_endian.setToolTip("Denso SH705x calibrations are big endian.")
+        self.cb_little_endian.setChecked(order_3d == "<")
+        self.cb_signed = QCheckBox("Signed — uncheck for Unsigned")
+        self.cb_signed.setChecked(signed_3d)
+        rules_box.addWidget(self.cb_little_endian)
+        rules_box.addWidget(self.cb_signed)
+        rules.setLayout(rules_box)
+        box.addWidget(rules)
+
+        sizes = QGroupBox("Data Sizes")
+        form = QFormLayout()
+        self.cmb_3d = self._size_combo(size_3d)
+        self.cmb_2d = self._size_combo(size_2d)
+        self.cmb_ax = self._size_combo(size_ax)
+        form.addRow("3D Data Size:", self.cmb_3d)
+        form.addRow("2D Data Size:", self.cmb_2d)
+        form.addRow("Axis Size:", self.cmb_ax)
+        sizes.setLayout(form)
+        box.addWidget(sizes)
+
+        box.addStretch()
+        return tab
+
+    @staticmethod
+    def _size_combo(current):
+        combo = QComboBox()
+        combo.addItems(SIZE_CHOICES)
+        combo.setCurrentText(current)
+        return combo
+
+    def _view_tab(self):
+        mw = self.main_window
+        tab = QWidget()
+        box = QVBoxLayout(tab)
+
+        maths = QGroupBox("Math (applied to Z / Curve)")
+        form = QFormLayout()
+        self.spin_factor_3d = self._spin(mw.factor_z_3d)
+        self.spin_offset_3d = self._spin(mw.offset_z_3d)
+        self.spin_factor_2d = self._spin(mw.factor_z_2d)
+        self.spin_offset_2d = self._spin(mw.offset_z_2d)
+        form.addRow("Factor 3D:", self.spin_factor_3d)
+        form.addRow("Offset 3D:", self.spin_offset_3d)
+        form.addRow("Factor 2D:", self.spin_factor_2d)
+        form.addRow("Offset 2D:", self.spin_offset_2d)
+        maths.setLayout(form)
+        box.addWidget(maths)
+
+        table = QGroupBox("Table & Hex Settings")
+        table_box = QVBoxLayout()
+        self.cb_factor_in_hex = QCheckBox("Apply Factor/Offset to Hex View (Table)")
+        self.cb_factor_in_hex.setChecked(mw.apply_factor_to_hex)
+        self.cb_highlight_3d = QCheckBox("Highlight 3D Maps in Hex Mode (blue)")
+        self.cb_highlight_3d.setChecked(mw.highlight_3d)
+        self.cb_highlight_2d = QCheckBox("Highlight 2D Maps in Hex Mode (green)")
+        self.cb_highlight_2d.setChecked(mw.highlight_2d)
+        # Exactly one of these -- the previous version created it twice, so the
+        # dialog showed two identical checkboxes and only the second one worked.
+        self.cb_highlight_custom = QCheckBox("Highlight Custom Tags in Hex Mode (orange)")
+        self.cb_highlight_custom.setChecked(mw.highlight_custom_tags)
+        for widget in (
+            self.cb_factor_in_hex,
+            self.cb_highlight_3d,
+            self.cb_highlight_2d,
+            self.cb_highlight_custom,
+        ):
+            table_box.addWidget(widget)
+
+        spark_row = QHBoxLayout()
+        spark_row.addWidget(QLabel("Sparkline Style:"))
+        self.rb_spark_bars = QRadioButton("Bars (WinOLS)")
+        self.rb_spark_line = QRadioButton("Continuous Line")
+        self.rb_spark_bars.setChecked(mw.sparkline_style is SparklineStyle.BARS)
+        self.rb_spark_line.setChecked(mw.sparkline_style is SparklineStyle.LINE)
+        spark_row.addWidget(self.rb_spark_bars)
+        spark_row.addWidget(self.rb_spark_line)
+        table_box.addLayout(spark_row)
+
+        position = QGroupBox("Hex Dump Plot Position")
+        position_row = QHBoxLayout()
+        self.rb_plot_top = QRadioButton("Top")
+        self.rb_plot_right = QRadioButton("Right")
+        self.rb_plot_top.setChecked(mw.hex_plot_position is HexPlotPosition.TOP)
+        self.rb_plot_right.setChecked(mw.hex_plot_position is HexPlotPosition.RIGHT)
+        position_row.addWidget(self.rb_plot_top)
+        position_row.addWidget(self.rb_plot_right)
+        position.setLayout(position_row)
+        table_box.addWidget(position)
+
+        table.setLayout(table_box)
+        box.addWidget(table)
+
+        rotation = QGroupBox("3D Mouse Rotation Mode")
+        rotation_box = QVBoxLayout()
+        self.rb_rotation = {
+            RotationMode.Z_ONLY: QRadioButton("Z-Axis Only (WinOLS azimuth)"),
+            RotationMode.WINOLS: QRadioButton("WinOLS Style (azimuth & tilt)"),
+            RotationMode.TILT: QRadioButton("Tilt Only (elevation)"),
+        }
+        self.rb_rotation[mw.rot_mode].setChecked(True)
+        for button in self.rb_rotation.values():
+            rotation_box.addWidget(button)
+        rotation.setLayout(rotation_box)
+        box.addWidget(rotation)
+
+        box.addStretch()
+        return tab
+
+    @staticmethod
+    def _spin(value):
+        spin = QDoubleSpinBox()
+        spin.setDecimals(5)
+        spin.setSingleStep(0.001)
+        spin.setRange(-1_000_000, 1_000_000)
+        spin.setValue(value)
+        return spin
+
+    # ------------------------------------------------------------------
+    # Apply
+    # ------------------------------------------------------------------
+
+    def _apply(self):
+        mw = self.main_window
+        dm = self.data_manager
+
+        mw.render_engine = "matplotlib" if self.rb_matplotlib.isChecked() else "pyqtgraph"
+
+        binary_changed = self.le_bin.text() != dm.bin_path
+        dm.bin_path = self.le_bin.text()
+        dm.csv_3d_path = self.le_3d.text()
+        dm.csv_2d_path = self.le_2d.text()
+        dm.csv_dtc_path = self.le_dtc.text()
+        dm.csv_potential_path = self.le_potential.text()
+        dm.load_dtc_csv()
+
+        if binary_changed:
+            ok, message = dm.load_binary()
+            mw.status_lbl.setText(message if message else "Binary loaded.")
+            if not ok:
+                QMessageBox.warning(mw, "Binary Not Loaded", message)
+
+        order = "<" if self.cb_little_endian.isChecked() else ">"
+        signed = self.cb_signed.isChecked()
+        dm.z_format_3d = order + formats.build(self.cmb_3d.currentText(), signed)
+        dm.z_format_2d = order + formats.build(self.cmb_2d.currentText(), signed)
+        dm.ax_format = formats.build(self.cmb_ax.currentText(), signed)
+
+        mw.factor_z_3d = self.spin_factor_3d.value()
+        mw.offset_z_3d = self.spin_offset_3d.value()
+        mw.factor_z_2d = self.spin_factor_2d.value()
+        mw.offset_z_2d = self.spin_offset_2d.value()
+
+        mw.apply_factor_to_hex = self.cb_factor_in_hex.isChecked()
+        mw.highlight_3d = self.cb_highlight_3d.isChecked()
+        mw.highlight_2d = self.cb_highlight_2d.isChecked()
+        mw.highlight_custom_tags = self.cb_highlight_custom.isChecked()
+        mw.sparkline_style = (
+            SparklineStyle.BARS if self.rb_spark_bars.isChecked() else SparklineStyle.LINE
+        )
+        mw.rot_mode = next(
+            (mode for mode, button in self.rb_rotation.items() if button.isChecked()),
+            RotationMode.Z_ONLY,
+        )
+
+        new_position = HexPlotPosition.TOP if self.rb_plot_top.isChecked() else HexPlotPosition.RIGHT
+        position_changed = new_position is not mw.hex_plot_position
+        mw.hex_plot_position = new_position
+
+        mw.map_type_dropdown_visible = self.rb_map_dropdown.isChecked()
+        if self.rb_map_dropdown.isChecked():
+            new_map_mode = MapMode.from_combo_index(mw.cmb_map_type.currentIndex())
+        else:
+            new_map_mode = next(
+                (mode for mode, button in self.rb_map_modes.items() if button.isChecked()),
+                MapMode.THREE_D,
+            )
+
+        new_app_mode = next(
+            (mode for mode, button in self.rb_app_modes.items() if button.isChecked()),
+            AppMode.MAP_VIEWER,
+        )
+
+        # A direct assignment: no more setting the button to the *previous* mode
+        # and calling the cycle handler so it lands on the wanted one.
+        map_mode_changed = new_map_mode is not mw.map_mode
+        mw.map_mode = new_map_mode
+
+        if new_app_mode is not mw.app_mode:
+            mw.set_app_mode(new_app_mode)
+        else:
+            mw._sync_mode_widgets()
+            if position_changed:
+                mw.apply_splitter_position()
+            if map_mode_changed or binary_changed:
+                mw.load_data()
             else:
-                self.main_window.cmb_map_type.setVisible(False)
-                if rb_m1.isChecked(): new_mode = '3d'
-                elif rb_m2.isChecked(): new_mode = '2d'
-                else: new_mode = 'tags'
-                
-            if new_mode != self.main_window.map_mode or getattr(self, 'last_dropdown_mode', None) != self.main_window.cmb_map_type.isVisible():
-                self.main_window.last_dropdown_mode = self.main_window.cmb_map_type.isVisible()
-                self.main_window.map_mode = new_mode
-                if self.main_window.btn_main_mode.text() == "Mode: Map Viewer":
-                    self.main_window.btn_hex_plot_mode.setVisible(self.main_window.map_mode == 'tags')
-                self.main_window.load_data() 
-            
-            is_little = self.main_window.cb_endian.isChecked()
-            is_signed = self.main_window.cb_signed.isChecked()
-            endian = '<' if is_little else '>'
-            
-            def build_fmt(size_str, signed):
-                if size_str == 'Float': return 'f'
-                elif size_str == '8-bit': char = 'b' if signed else 'B'
-                elif size_str == '16-bit': char = 'h' if signed else 'H'
-                else: char = 'i' if signed else 'I'
-                return char
-
-            char_3d = build_fmt(self.main_window.cmb_3d.currentText(), is_signed)
-            self.main_window.data_manager.z_format_3d = endian + char_3d
-            
-            char_2d = build_fmt(self.main_window.cmb_2d.currentText(), is_signed)
-            self.main_window.data_manager.z_format_2d = endian + char_2d
-            
-            char_ax = build_fmt(self.main_window.cmb_ax.currentText(), is_signed)
-            self.main_window.data_manager.ax_format = char_ax
-            
-            if rb_r1.isChecked(): self.main_window.rot_mode = 'Z'
-            elif rb_r2.isChecked(): self.main_window.rot_mode = 'WinOLS'
-            else: self.main_window.rot_mode = 'Tilt'
-            
-            self.main_window.factor_z_3d = spin_f_3d.value()
-            self.main_window.offset_z_3d = spin_o_3d.value()
-            self.main_window.factor_z_2d = spin_f_2d.value()
-            self.main_window.offset_z_2d = spin_o_2d.value()
-            
-            self.main_window.apply_factor_to_hex = self.main_window.cb_hex_f.isChecked()
-            self.main_window.highlight_3d = self.main_window.cb_hl_3d.isChecked()
-            self.main_window.highlight_2d = self.main_window.cb_hl_2d.isChecked()
-            self.main_window.highlight_custom_tags = self.main_window.cb_hl_custom.isChecked()
-            self.main_window.highlight_custom_tags = self.main_window.cb_hl_custom.isChecked()
-            self.main_window.sparkline_style = 'Bars' if rb_sp1.isChecked() else 'Line'
-            
-            new_pos = 'top' if rb_pos_top.isChecked() else 'right'
-            if new_pos != self.main_window.hex_plot_position:
-                self.main_window.hex_plot_position = new_pos
-                if self.main_window.btn_main_mode.text() == "Mode: Hex Dump":
-                    self.main_window.apply_splitter_position()
-            
-            self.main_window.draw_map()
-
+                mw.draw_map()

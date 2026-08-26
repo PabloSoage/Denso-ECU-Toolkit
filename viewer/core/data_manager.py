@@ -1,47 +1,145 @@
-import os
-import struct
+"""Loading, decoding and patching of Denso calibration data.
+
+Owns the binary, the map catalogue (as a normalised DataFrame), user tags and
+custom per-map settings. Knows nothing about Qt.
+"""
+
+import ast
 import json
-import math
+import os
+from contextlib import contextmanager
+
 import numpy as np
 import pandas as pd
+
+from . import formats
+from .integrity import export_report
+from .state import Baseline, MapMode
+
+DEFAULT_CSV_3D = "3d_maps_review.csv"
+DEFAULT_CSV_2D = "2d_maps_review.csv"
+DEFAULT_CSV_DTC = "2d_and_3D_maps_DTC_Mapped.csv"
+DEFAULT_CSV_POTENTIAL = "potential_maps.csv"
+DEFAULT_BIN = os.path.join("research", "115_e3a4d17c28.bin")
+
+#: Addresses that mean "no axis / no pointer".
+NULL_ADDRESSES = {"", "0", "0X0", "0x0", "00000000"}
+
+
+class BinaryUnavailable(RuntimeError):
+    """The calibration binary could not be read.
+
+    Raised rather than returning empty data, because every silent-empty path in
+    the previous design ended with the user being told an operation succeeded
+    when their edits had actually been dropped.
+    """
+
+
+def _clean_addr(value):
+    """Normalise an address cell to an uppercase bare-hex string."""
+    text = str(value).strip().upper()
+    if text.startswith("0X"):
+        text = text[2:]
+    return text
+
+
+def parse_address(value):
+    """Parse an address cell, or return ``None`` when it is null/unparseable."""
+    text = _clean_addr(value)
+    if text in NULL_ADDRESSES or not text:
+        return None
+    try:
+        return int(text, 16)
+    except ValueError:
+        return None
+
 
 class DataManager:
     def __init__(self):
         self.project_path = ""
-        self.bin_path = ""
-        self.csv_3d_path = ""
-        self.csv_2d_path = ""
-        self.csv_dtc_path = "2d_and_3D_maps_DTC_Mapped.csv"
-        self.csv_potential_path = "potential_maps.csv"
-        
-        self.dtc_data = {}  # { "Wrapper_Addr": { "RAM": ..., "Func": ... } }
-        self.tags = {}  # { hex_address: {"tags": ["Tag1", ...], "length": int} }
-        self.hexdump_tags = {}  # { hex_address: {"tags": ["Tag1", ...], "length": int, "chunks": [...]} }
-        self.z_format_3d = '>H'
-        self.z_format_2d = '>f'
-        self.ax_format = 'f'
-        
+        self.bin_path = DEFAULT_BIN
+        self.csv_3d_path = DEFAULT_CSV_3D
+        self.csv_2d_path = DEFAULT_CSV_2D
+        self.csv_dtc_path = DEFAULT_CSV_DTC
+        self.csv_potential_path = DEFAULT_CSV_POTENTIAL
+
+        self.dtc_data = {}
+        #: address (hex str) -> {"tags": [...], "length": int}
+        self.tags = {}
+        #: address (hex str) -> {"tags": [...], "length": int, "chunks": [...]}
+        self.hexdump_tags = {}
+        self.z_format_3d = ">H"
+        self.z_format_2d = ">f"
+        self.ax_format = "f"
+
+        self.df = pd.DataFrame()
         self.current_index = 0
         self.total_maps = 0
         self.current_map_addr = ""
         self.custom_map_settings = {}
-        
+
         self.show_modified = True
+        self.bin_data = b""
+        self.map_array = None
+        self.map_dicts = {}
+        self.map_dicts_tuples = {}
+
         self._bin_data_cache = b""
         self._modified_bin_data = bytearray()
         self._cached_bin_path = ""
         self._reference_bin_data = b""
+        self._pending_diff = {}
+        self._axis_cache = {}
+
+    # ------------------------------------------------------------------
+    # Binary access
+    # ------------------------------------------------------------------
+
+    def load_binary(self):
+        """(Re)read the binary from disk.
+
+        Returns ``(True, "")`` or ``(False, reason)``. Never raises — callers
+        that must have data use :meth:`require_binary` instead.
+        """
+        path = self.bin_path
+        if not path:
+            return False, "No binary file is configured."
+        if not os.path.exists(path):
+            return False, f"Binary not found: {path}"
+        try:
+            with open(path, "rb") as handle:
+                data = handle.read()
+        except OSError as exc:
+            return False, f"Could not read {path}: {exc}"
+
+        if not data:
+            return False, f"Binary is empty: {path}"
+
+        self._bin_data_cache = data
+        self._modified_bin_data = bytearray(data)
+        self._cached_bin_path = path
+        self._axis_cache.clear()
+
+        if self._pending_diff:
+            pending, self._pending_diff = self._pending_diff, {}
+            applied, skipped = self._write_diff(pending)
+            if skipped:
+                return True, (
+                    f"Loaded, but {skipped} of {applied + skipped} saved edits fall "
+                    f"outside this binary and were dropped."
+                )
+        return True, ""
 
     def _ensure_bin_loaded(self):
-        if self.bin_path != self._cached_bin_path or not self._bin_data_cache:
-            if os.path.exists(self.bin_path):
-                with open(self.bin_path, "rb") as f:
-                    self._bin_data_cache = f.read()
-                self._modified_bin_data = bytearray(self._bin_data_cache)
-                self._cached_bin_path = self.bin_path
-            else:
-                self._bin_data_cache = b""
-                self._modified_bin_data = bytearray()
+        if self._cached_bin_path != self.bin_path or not self._bin_data_cache:
+            self.load_binary()
+
+    def require_binary(self):
+        """Return the active byte view, raising :class:`BinaryUnavailable`."""
+        self._ensure_bin_loaded()
+        if not self._bin_data_cache:
+            raise BinaryUnavailable(f"No calibration binary loaded ({self.bin_path or 'no path set'}).")
+        return self.get_bin_data()
 
     def get_bin_data(self):
         self._ensure_bin_loaded()
@@ -49,565 +147,808 @@ class DataManager:
             return self._modified_bin_data
         return self._bin_data_cache
 
+    @property
+    def has_binary(self):
+        self._ensure_bin_loaded()
+        return bool(self._bin_data_cache)
+
+    @property
+    def has_edits(self):
+        return bool(self._bin_data_cache) and self._bin_data_cache != bytes(self._modified_bin_data)
+
     def get_bin_diff(self):
         if not self._bin_data_cache or not self._modified_bin_data:
-            return {}
-        arr_orig = np.frombuffer(self._bin_data_cache, dtype=np.uint8)
-        arr_mod = np.frombuffer(self._modified_bin_data, dtype=np.uint8)
-        diff_indices = np.nonzero(arr_orig != arr_mod)[0]
-        return {str(i): int(arr_mod[i]) for i in diff_indices}
+            return dict(self._pending_diff)
+        original = np.frombuffer(self._bin_data_cache, dtype=np.uint8)
+        modified = np.frombuffer(bytes(self._modified_bin_data), dtype=np.uint8)
+        limit = min(len(original), len(modified))
+        differing = np.nonzero(original[:limit] != modified[:limit])[0]
+        return {str(int(i)): int(modified[i]) for i in differing}
+
+    def _write_diff(self, diff_dict):
+        """Apply ``{offset: byte}``. Returns ``(applied, skipped)``."""
+        applied = skipped = 0
+        for key, value in diff_dict.items():
+            try:
+                index = int(key)
+            except (TypeError, ValueError):
+                skipped += 1
+                continue
+            if 0 <= index < len(self._modified_bin_data):
+                self._modified_bin_data[index] = int(value) & 0xFF
+                applied += 1
+            else:
+                skipped += 1
+        return applied, skipped
 
     def apply_bin_diff(self, diff_dict):
+        """Apply saved edits, deferring them if the binary is not loaded yet.
+
+        Deferring matters: a project whose ``bin_path`` is momentarily wrong used
+        to discard every stored edit while reporting success.
+        """
+        if not diff_dict:
+            return 0, 0
         self._ensure_bin_loaded()
-        if not self._modified_bin_data: return
-        for k, v in diff_dict.items():
-            idx = int(k)
-            if idx < len(self._modified_bin_data):
-                self._modified_bin_data[idx] = int(v)
+        if not self._modified_bin_data:
+            self._pending_diff = dict(diff_dict)
+            return 0, 0
+        return self._write_diff(diff_dict)
 
     def is_map_modified(self, start_addr, size):
         self._ensure_bin_loaded()
         if not self._modified_bin_data or not self._bin_data_cache:
             return False
-        if start_addr + size > len(self._modified_bin_data):
+        if start_addr is None or start_addr < 0 or start_addr + size > len(self._modified_bin_data):
             return False
-        return self._bin_data_cache[start_addr:start_addr+size] != self._modified_bin_data[start_addr:start_addr+size]
+        return self._bin_data_cache[start_addr:start_addr + size] != self._modified_bin_data[start_addr:start_addr + size]
 
-    def apply_edit(self, address, old_val, new_val, count=1, format_char='f', endian='<'):
+    def apply_edit(self, address, new_val, fmt):
+        """Write one value at ``address``. Returns ``(True, "")`` or ``(False, why)``."""
         if not self._modified_bin_data:
-            return False
-            
-        try:
-            if format_char == 'f': bytes_per_value = 4
-            elif format_char.lower() == 'h': bytes_per_value = 2
-            elif format_char.lower() in ('i', 'l'): bytes_per_value = 4
-            else: bytes_per_value = 1
-            
-            if format_char.lower() != 'f':
-                new_val = int(round(new_val))
-            
-            pack_fmt = f"{endian}{format_char}"
-            raw_new = struct.pack(pack_fmt, new_val)
-            
-            for i in range(len(raw_new)):
-                self._modified_bin_data[address + i] = raw_new[i]
-                
-            return True
-        except Exception as e:
-            print("Error applying edit:", e)
-            return False
+            return False, "No binary loaded."
 
-    def load_csv(self, map_mode, main_mode="Map Viewer"):
-        if main_mode == "Potential Maps":
-            if not getattr(self, 'csv_potential_path', None) or not os.path.exists(self.csv_potential_path):
+        width = formats.value_size(fmt)
+        if address < 0 or address + width > len(self._modified_bin_data):
+            return False, (
+                f"Address 0x{address:X} + {width} bytes is outside the binary "
+                f"({len(self._modified_bin_data)} bytes)."
+            )
+        try:
+            raw = formats.pack_value(new_val, fmt)
+        except ValueError as exc:
+            return False, str(exc)
+
+        self._modified_bin_data[address:address + width] = raw
+        self._axis_cache.clear()
+        return True, ""
+
+    def revert_all_edits(self):
+        """Discard every pending edit and go back to the on-disk binary."""
+        self._ensure_bin_loaded()
+        self._modified_bin_data = bytearray(self._bin_data_cache)
+        self._pending_diff.clear()
+        self._axis_cache.clear()
+
+    def export_summary(self):
+        """``(total_bytes, region_count, lines)`` describing the pending edit."""
+        return export_report(self._bin_data_cache, bytes(self._modified_bin_data))
+
+    def write_modified_bin(self, file_path):
+        if not self._modified_bin_data:
+            return False, "No binary loaded."
+        try:
+            with open(file_path, "wb") as handle:
+                handle.write(self._modified_bin_data)
+        except OSError as exc:
+            return False, str(exc)
+        return True, ""
+
+    def load_reference_bin(self, file_path):
+        try:
+            with open(file_path, "rb") as handle:
+                self._reference_bin_data = handle.read()
+        except OSError as exc:
+            return False, str(exc)
+        if not self._reference_bin_data:
+            return False, "Reference binary is empty."
+        return True, ""
+
+    @property
+    def reference_bin_data(self):
+        return self._reference_bin_data
+
+    # ------------------------------------------------------------------
+    # Map catalogue
+    # ------------------------------------------------------------------
+
+    def _tags_for_addresses(self, *addresses):
+        """Union of tags attached to any of ``addresses``, in first-seen order.
+
+        A map has several identities — the config struct, the call site that
+        consumes it, and the data block. The heuristic scanner records the
+        struct address while the mass extractors record the call site, so a tag
+        applied in one mode used to be invisible in the other. Looking under
+        every identity makes tags mode-independent.
+        """
+        seen = []
+        for address in addresses:
+            key = _clean_addr(address)
+            if not key or key in NULL_ADDRESSES:
+                continue
+            for source in (self.tags, self.hexdump_tags):
+                for tag in source.get(key, {}).get("tags", []):
+                    if tag not in seen:
+                        seen.append(tag)
+        return seen
+
+    def custom_settings_for(self, row):
+        """Per-map overrides, preferring the canonical key but honouring legacy ones.
+
+        Projects saved before the data address became the canonical key stored
+        their overrides under the call-site address. Reading both means those
+        projects keep working; writes always go to the canonical key.
+        """
+        for key in self.identity_keys(row):
+            settings = self.custom_map_settings.get(key)
+            if settings:
+                return settings
+        return {}
+
+    @staticmethod
+    def identity_keys(row):
+        """Every address this row can be recognised by, canonical one first."""
+        keys = []
+        for column in ("Data_Addr", "Struct_Addr", "Call_Site_Addr", "Wrapper_Addr"):
+            key = _clean_addr(row.get(column, ""))
+            if key and key not in NULL_ADDRESSES and key not in keys:
+                keys.append(key)
+        return keys
+
+    @staticmethod
+    def canonical_key(row):
+        """The key new settings are written under: the data address."""
+        keys = DataManager.identity_keys(row)
+        return keys[0] if keys else ""
+
+    def set_custom_setting(self, row, **values):
+        key = self.canonical_key(row)
+        if not key:
+            return ""
+        self.custom_map_settings.setdefault(key, {}).update(values)
+        return key
+
+    def _normalise_catalogue(self, df, map_type):
+        """Bring one CSV into the internal schema, accepting old and new headers.
+
+        Historical column meanings that this untangles:
+
+        * ``Wrapper_Addr`` in ``potential_maps.csv`` is the **config struct**
+          address, but in the review CSVs it is the **call site**. Same header,
+          disjoint meanings — their overlap is exactly zero rows.
+        * 2D curves name their data column ``Curve_Data_Addr``, 3D maps use
+          ``Map_Z_Addr``.
+        """
+        df = df.copy()
+        df.columns = [str(c).strip() for c in df.columns]
+
+        if "Data_Addr" not in df.columns:
+            if "Map_Z_Addr" in df.columns:
+                df["Data_Addr"] = df["Map_Z_Addr"]
+            elif "Curve_Data_Addr" in df.columns:
+                df["Data_Addr"] = df["Curve_Data_Addr"]
+            else:
+                df["Data_Addr"] = ""
+
+        if "Struct_Addr" not in df.columns:
+            df["Struct_Addr"] = df["Wrapper_Addr"] if map_type == "potential" and "Wrapper_Addr" in df.columns else ""
+        if "Call_Site_Addr" not in df.columns:
+            df["Call_Site_Addr"] = df["Wrapper_Addr"] if map_type != "potential" and "Wrapper_Addr" in df.columns else ""
+
+        for column in ("Size_X", "Size_Y", "Axis_X_Addr", "Axis_Y_Addr"):
+            if column not in df.columns:
+                df[column] = "1" if column.startswith("Size") else ""
+
+        for column in ("Data_Addr", "Struct_Addr", "Call_Site_Addr", "Axis_X_Addr", "Axis_Y_Addr", "Wrapper_Addr"):
+            if column in df.columns:
+                df[column] = df[column].map(_clean_addr)
+
+        # Keep Wrapper_Addr populated so saved projects and DTC lookups still resolve.
+        if "Wrapper_Addr" not in df.columns:
+            df["Wrapper_Addr"] = df["Call_Site_Addr"].where(df["Call_Site_Addr"] != "", df["Struct_Addr"])
+
+        return df
+
+    def _apply_tags(self, df):
+        df["Tag"] = [
+            ", ".join(self._tags_for_addresses(*self.identity_keys(row), row.get("Axis_X_Addr", "")))
+            for _, row in df.iterrows()
+        ]
+        return df
+
+    def _tags_frame(self):
+        rows = []
+        for addr_hex, data in self.hexdump_tags.items():
+            length = int(data.get("length", 1) or 1)
+            chunks = data.get("chunks")
+            custom = self.custom_map_settings.get(_clean_addr(addr_hex), {})
+            width = formats.value_size(custom.get("z_format", self.z_format_3d))
+            elements = max(1, length // width if width else length)
+
+            size_x = int(custom.get("Size_X", min(elements, 16)))
+            size_y = int(custom.get("Size_Y", max(1, elements // max(size_x, 1))))
+
+            rows.append({
+                "Map_Type": "tags",
+                "Data_Addr": _clean_addr(addr_hex),
+                "Struct_Addr": "",
+                "Call_Site_Addr": "",
+                "Wrapper_Addr": _clean_addr(addr_hex),
+                "Axis_X_Addr": "",
+                "Axis_Y_Addr": "",
+                "Size_X": str(size_x),
+                "Size_Y": str(size_y),
+                "Tag": ", ".join(data.get("tags", [])),
+                "Tag_Length": length,
+                "Chunks": str(chunks) if chunks else "",
+            })
+        return pd.DataFrame(rows)
+
+    def _read_catalogue_csv(self, path, map_type):
+        if not path or not os.path.exists(path):
+            return None, f"Not found: {path}"
+        try:
+            df = pd.read_csv(path, dtype=str).fillna("")
+        except (OSError, ValueError, pd.errors.ParserError) as exc:
+            return None, f"Could not parse {os.path.basename(path)}: {exc}"
+        if df.empty:
+            return None, f"{os.path.basename(path)} has no rows."
+        return df, ""
+
+    def load_csv(self, map_mode, potential_mode=False):
+        """Populate ``self.df``. Returns ``(ok, message)``.
+
+        ``message`` is non-empty even when ``ok`` is True if something was
+        skipped, so the caller can surface a partial-load warning instead of
+        showing an empty list with no explanation.
+        """
+        if isinstance(map_mode, MapMode):
+            map_mode = map_mode.value
+
+        self._axis_cache.clear()
+        previous_addr = self.current_map_addr
+        problems = []
+
+        if potential_mode:
+            df, error = self._read_catalogue_csv(self.csv_potential_path, "potential")
+            if df is None:
                 self.df = pd.DataFrame()
                 self.total_maps = 0
-                return False, "Potential Maps CSV not found."
-            try:
-                df_pot = pd.read_csv(self.csv_potential_path, dtype=str)
-                
-                if 'Map_Z_Addr' in df_pot.columns:
-                    df_pot['Curve_Data_Addr'] = df_pot['Map_Z_Addr']
-                
-                if map_mode != 'all' and map_mode != 'tags':
-                    df_pot = df_pot[df_pot['Map_Type'].str.lower() == map_mode]
-                elif map_mode == 'tags':
-                    df_pot = pd.DataFrame()
-                    
-                self.df = df_pot.reset_index(drop=True).fillna('')
-                self.total_maps = len(self.df)
-                
-                self.current_index = 0
-                self.current_map_addr = ''
-                return True, ""
-            except Exception as e:
-                return False, str(e)
-
-        modes_to_load = [map_mode] if map_mode != 'all' else ['3d', '2d', 'tags']
-        df_list = []
-        
-        for m in modes_to_load:
-            if m == 'tags':
-                rows = []
-                for addr_hex, data in self.hexdump_tags.items():
-                    tags_str = ', '.join(data.get('tags', []))
-                    length = data.get('length', 1)
-                    chunks = data.get('chunks', None)
-                    
-                    # You might want to grab user defined shape from custom map settings if defined
-                    custom = self.custom_map_settings.get(addr_hex, {})
-                    bpc = 1
-                    fmt_char = custom.get('z_format', self.z_format_3d)[-1]
-                    if fmt_char == 'f': bpc = 4
-                    elif fmt_char.lower() == 'h': bpc = 2
-                    elif fmt_char.lower() in ('i', 'l'): bpc = 4
-                    
-                    num_elements = length // bpc if bpc > 0 else length
-                    if num_elements == 0: num_elements = 1
-
-                    user_sx = custom.get('Size_X', min(num_elements, 16))
-                    user_sy = custom.get('Size_Y', max(1, num_elements // max(user_sx, 1)))
-                    
-                    rows.append({
-                        'Map_Z_Addr': addr_hex,
-                        'Curve_Data_Addr': addr_hex,
-                        'Wrapper_Addr': addr_hex,
-                        'Size_X': str(user_sx),
-                        'Size_Y': str(user_sy),
-                        'Tag': tags_str,
-                        'Tag_Length': length,
-                        'Map_Type': 'tags',
-                        'Chunks': str(chunks) if chunks else ''
-                    })
-                df_tags = pd.DataFrame(rows)
-                df_list.append(df_tags)
-            else:
-                target_csv = self.csv_3d_path if m == '3d' else self.csv_2d_path
-                if os.path.exists(target_csv):
-                    try:
-                        df_csv = pd.read_csv(target_csv, dtype=str)
-                        df_csv['Map_Type'] = m
-                        tags_list = []
-                        for _, row in df_csv.iterrows():
-                            addr = str(row.get('Wrapper_Addr', '')).strip().upper()
-                            tags_list.append(', '.join(self.tags.get(addr, {}).get('tags', [])))
-                        df_csv['Tag'] = tags_list
-                        df_list.append(df_csv)
-                    except:
-                        pass
-        
-        if df_list:
-            self.df = pd.concat(df_list, ignore_index=True)
-            self.df = self.df.fillna('')
+                return False, error
+            df = self._normalise_catalogue(df, "potential")
+            if "Map_Type" not in df.columns:
+                df["Map_Type"] = "3d"
+            df["Map_Type"] = df["Map_Type"].str.lower()
+            if map_mode in ("3d", "2d"):
+                df = df[df["Map_Type"] == map_mode]
+            elif map_mode == "tags":
+                df = df.iloc[0:0]
+            frames = [self._apply_tags(df.reset_index(drop=True))]
         else:
-            self.df = pd.DataFrame()
-            
+            frames = []
+            wanted = [map_mode] if map_mode != "all" else ["3d", "2d", "tags"]
+            for mode in wanted:
+                if mode == "tags":
+                    tags_df = self._tags_frame()
+                    if not tags_df.empty:
+                        frames.append(tags_df)
+                    continue
+                path = self.csv_3d_path if mode == "3d" else self.csv_2d_path
+                df, error = self._read_catalogue_csv(path, mode)
+                if df is None:
+                    problems.append(error)
+                    continue
+                df = self._normalise_catalogue(df, mode)
+                df["Map_Type"] = mode
+                frames.append(self._apply_tags(df))
+
+        frames = [f for f in frames if not f.empty]
+        self.df = pd.concat(frames, ignore_index=True).fillna("") if frames else pd.DataFrame()
         self.total_maps = len(self.df)
-        
-        # Re-apply current selection if possible
-        if self.current_map_addr and hasattr(self, 'current_map_addr') and not self.df.empty:
-            match = self.df.index[self.df['Wrapper_Addr'].str.strip().str.upper() == self.current_map_addr.upper()].tolist()
-            if not match:
-                addr_col = 'Map_Z_Addr' if 'Map_Z_Addr' in self.df.columns else 'Curve_Data_Addr'
-                match = self.df.index[self.df[addr_col].str.strip().str.upper() == self.current_map_addr.upper()].tolist()
-            if match:
-                self.current_index = match[0]
-            else:
-                self.current_index = 0
-                self.current_map_addr = ''
-        else:
-            self.current_index = 0
-            self.current_map_addr = ''
-            
-        return True, ''
+        self._restore_selection(previous_addr)
 
-    def read_axis(self, hex_addr, size, endian, axis_format):
+        if self.df.empty:
+            return False, problems[0] if problems else "No maps to show for this mode."
+        return True, "; ".join(problems)
+
+    def _restore_selection(self, previous_addr):
+        """Keep the same map selected across a reload when it still exists.
+
+        Matched against every identity, so switching between Map Viewer and
+        Potential Maps -- which key rows differently -- keeps your place.
+        """
+        self.current_index = 0
+
+        if self.df.empty:
+            self.current_map_addr = ""
+            return
+
+        target = _clean_addr(previous_addr)
+        if not target:
+            self.current_map_addr = ""
+            return
+
+        for column in ("Data_Addr", "Wrapper_Addr", "Struct_Addr", "Call_Site_Addr"):
+            if column not in self.df.columns:
+                continue
+            matches = self.df.index[self.df[column] == target].tolist()
+            if matches:
+                self.current_index = int(matches[0])
+                self.current_map_addr = target
+                return
+
+        self.current_map_addr = ""
+
+    def current_row(self):
+        if self.df.empty:
+            return None
+        index = min(max(self.current_index, 0), len(self.df) - 1)
+        return self.df.iloc[index]
+
+    # ------------------------------------------------------------------
+    # Decoding
+    # ------------------------------------------------------------------
+
+    def read_axis(self, hex_addr, size, fmt):
+        """Read ``size`` axis values, falling back to ``0..size-1`` indices.
+
+        A null pointer is a legitimate "this axis is just an index" in Denso
+        calibrations, so that case is not an error. A genuine read failure also
+        falls back, but is not silent: it is cached and reported by
+        :meth:`axis_is_synthetic`.
+        """
+        address = parse_address(hex_addr)
+        if address is None or size <= 0:
+            return np.arange(max(size, 0), dtype=float)
+
+        cache_key = (address, size, formats.normalise(fmt))
+        cached = self._axis_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
         try:
-            addr = int(str(hex_addr).strip(), 16)
-            if addr == 0 or addr >= 0xFFFF0000:
-                return np.arange(size)
-            
-            f_char = axis_format[-1].lower()
-            if f_char == 'f': bytes_per_value = 4
-            elif f_char == 'h': bytes_per_value = 2
-            elif f_char in ('i', 'l'): bytes_per_value = 4
-            else: bytes_per_value = 1
-            
-            bin_data = self.get_bin_data()
-            raw = bin_data[addr:addr + size * bytes_per_value]
-            return np.array(struct.unpack(f"{endian}{size}{axis_format}", raw)) 
-        except:
-            return np.arange(size)
+            values = np.array(formats.unpack_array(self.get_bin_data(), fmt, size, address), dtype=float)
+        except (ValueError, BinaryUnavailable):
+            values = np.arange(size, dtype=float)
 
-    def read_map_3d(self):
-        row = self.df.iloc[self.current_index]
-        size_x = int(row['Size_X'])
-        size_y = int(row['Size_Y'])
-        map_z_hex = str(row['Map_Z_Addr']).strip()
-        wrapper_addr_hex = str(row['Wrapper_Addr']).strip()
-        
-        custom = self.custom_map_settings.get(wrapper_addr_hex, {})
-        z_format = custom.get('z_format', self.z_format_3d)
-        ax_fmt = custom.get('ax_format', self.ax_format)
-        
-        endian = z_format[0]
-        fmt_char = z_format[-1]
+        self._axis_cache[cache_key] = values
+        return values
 
-        if fmt_char == 'f': bytes_per_value = 4
-        elif fmt_char.lower() == 'h': bytes_per_value = 2
-        elif fmt_char.lower() in ('i', 'l'): bytes_per_value = 4
-        else: bytes_per_value = 1
-
-        bin_data = self.get_bin_data()
-        z_start = int(map_z_hex, 16)
-        raw_z_data = bin_data[z_start:z_start + size_y * size_x * bytes_per_value]
-
-        z_values = struct.unpack(f"{endian}{size_y * size_x}{fmt_char}", raw_z_data)
-        matrix_z = np.array(z_values).reshape((size_y, size_x))
-        axis_x = self.read_axis(str(row['Axis_X_Addr']).strip(), size_x, endian, ax_fmt)
-        axis_y = self.read_axis(str(row['Axis_Y_Addr']).strip(), size_y, endian, ax_fmt)
-        return matrix_z, axis_x, axis_y, size_y, size_x, map_z_hex
-
-    def read_map_2d(self):
-        row = self.df.iloc[self.current_index]
-        size_x = int(row['Size_X'])
-        curve_data_hex = str(row['Curve_Data_Addr']).strip()
-        wrapper_addr_hex = str(row['Wrapper_Addr']).strip()
-
-        custom = self.custom_map_settings.get(wrapper_addr_hex, {})
-        z_format = custom.get('z_format', self.z_format_2d)
-        ax_fmt = custom.get('ax_format', self.ax_format)
-
-        endian = z_format[0]
-        fmt_char = z_format[-1]
-
-        if fmt_char == 'f': bytes_per_value = 4
-        elif fmt_char.lower() == 'h': bytes_per_value = 2
-        elif fmt_char.lower() in ('i', 'l'): bytes_per_value = 4
-        else: bytes_per_value = 1
-
-        bin_data = self.get_bin_data()
-        z_start = int(curve_data_hex, 16)
-        raw_z = bin_data[z_start:z_start + size_x * bytes_per_value]
-
-        z_values = struct.unpack(f"{endian}{size_x}{fmt_char}", raw_z)
-        curve_z = np.array(z_values)
-        axis_x = self.read_axis(str(row['Axis_X_Addr']).strip(), size_x, endian, ax_fmt)
-
-        axis_y_dummy = np.array([1])
-        size_y_dummy = 1
-
-        return curve_z, axis_x, axis_y_dummy, size_y_dummy, size_x, curve_data_hex
-    def read_map_tags(self, as_2d=False):
-        row = self.df.iloc[self.current_index]
-        addr_hex = str(row['Map_Z_Addr']).strip()
-        length = int(row['Tag_Length'])
-
-        custom = self.custom_map_settings.get(addr_hex, {})
-        z_format = custom.get('z_format', self.z_format_3d)
-
-        endian = z_format[0]
-        fmt_char = z_format[-1]
-
-        bpc = 1
-        if fmt_char == 'f': bpc = 4
-        elif fmt_char.lower() == 'h': bpc = 2
-        elif fmt_char.lower() in ('i', 'l'): bpc = 4
-
-        num_elements = length // bpc
-        if num_elements == 0:
-            num_elements = 1
-            bpc = length
-            
-        chunks_str = str(row.get('Chunks', ''))
-        z_values = []
-        chunk_sx = None
-        chunk_sy = None
-        bin_data = self.get_bin_data()
-        
-        if chunks_str:
-            import ast
-            try:
-                chunks = ast.literal_eval(chunks_str)
-                chunk_sy = len(chunks)
-                for i, (c_addr, c_len) in enumerate(chunks):
-                    raw_z = bin_data[c_addr:c_addr + c_len]
-                    c_elements = c_len // bpc
-                    if i == 0:
-                        chunk_sx = c_elements
-                    if c_elements > 0:
-                        z_values.extend(struct.unpack(f"{endian}{c_elements}{fmt_char}", raw_z))
-            except:
-                z_start = int(addr_hex, 16)
-                raw_z = bin_data[z_start:z_start + num_elements * bpc]
-                z_values = list(struct.unpack(f"{endian}{num_elements}{fmt_char}", raw_z))
+    def _formats_for(self, row):
+        """``(z_format, axis_format)`` for a row, honouring per-map overrides."""
+        custom = self.custom_settings_for(row)
+        map_type = row.get("Map_Type", "3d")
+        if map_type == "2d":
+            default_z = self.z_format_2d
         else:
-            z_start = int(addr_hex, 16)
-            raw_z = bin_data[z_start:z_start + num_elements * bpc]
-            z_values = list(struct.unpack(f"{endian}{num_elements}{fmt_char}", raw_z))
+            default_z = self.z_format_3d
+        return custom.get("z_format", default_z), custom.get("ax_format", self.ax_format)
 
-        num_elements = len(z_values)
+    def read_map(self, row, as_2d=False):
+        """Decode any row into ``(matrix, axis_x, axis_y, size_y, size_x, addr)``.
+
+        Replaces the three near-identical ``read_map_3d`` / ``read_map_2d`` /
+        ``read_map_tags`` methods; the differences are three lines, not three
+        functions.
+        """
+        map_type = row.get("Map_Type", "3d")
+        if map_type == "tags":
+            return self._read_tag_block(row, as_2d=as_2d)
+
+        z_format, ax_format = self._formats_for(row)
+        addr_hex = _clean_addr(row.get("Data_Addr", ""))
+        address = parse_address(addr_hex)
+        if address is None:
+            raise ValueError(f"Row has no usable data address ({row.get('Data_Addr', '')!r}).")
+
+        size_x = max(1, int(row.get("Size_X", 1) or 1))
+        size_y = max(1, int(row.get("Size_Y", 1) or 1)) if map_type == "3d" else 1
+
+        try:
+            values = formats.unpack_array(self.get_bin_data(), z_format, size_x * size_y, address)
+        except ValueError as exc:
+            raise ValueError(f"Map at {addr_hex} ({size_x}x{size_y}, {z_format}) {exc}") from exc
+
+        axis_x = self.read_axis(row.get("Axis_X_Addr", ""), size_x, ax_format)
+        if map_type == "3d":
+            matrix = np.array(values).reshape((size_y, size_x))
+            axis_y = self.read_axis(row.get("Axis_Y_Addr", ""), size_y, ax_format)
+        else:
+            matrix = np.array(values)
+            axis_y = np.array([1.0])
+
+        return matrix, axis_x, axis_y, size_y, size_x, addr_hex
+
+    @contextmanager
+    def _reading_from(self, baseline):
+        """Temporarily decode against a different image.
+
+        Comparison modes need the same row read from the pristine binary or from
+        an externally loaded one. Doing that by hand meant assigning to private
+        caches and restoring a hardcoded ``True`` afterwards, which silently did
+        the wrong thing whenever the previous state was not ``True``. This saves
+        and restores whatever was actually there.
+        """
+        previous_show = self.show_modified
+        previous_cache = self._bin_data_cache
+        previous_axis_cache = self._axis_cache
+        self._axis_cache = {}
+        try:
+            if baseline is Baseline.EXTERNAL_BIN:
+                if not self._reference_bin_data:
+                    raise BinaryUnavailable("No external reference binary is loaded.")
+                self._bin_data_cache = self._reference_bin_data
+            self.show_modified = False
+            yield
+        finally:
+            self.show_modified = previous_show
+            self._bin_data_cache = previous_cache
+            self._axis_cache = previous_axis_cache
+
+    def read_map_baseline(self, row, baseline, as_2d=False):
+        """Decode ``row`` from the comparison baseline, or ``None`` if there is none."""
+        if baseline is Baseline.NONE:
+            return None
+        if baseline is Baseline.REFERENCE_MAP:
+            return None  # The reference matrix is held by the UI, not re-read here.
+        with self._reading_from(baseline):
+            return self.read_map(row, as_2d=as_2d)
+
+    def _read_tag_block(self, row, as_2d=False):
+        z_format, _ = self._formats_for(row)
+        width = formats.value_size(z_format)
+        addr_hex = _clean_addr(row.get("Data_Addr", ""))
+        length = int(row.get("Tag_Length", 1) or 1)
+
+        chunks = self._parse_chunks(row.get("Chunks", ""))
+        data = self.get_bin_data()
+        values = []
+        chunk_size_x = chunk_size_y = None
+
+        if chunks:
+            chunk_size_y = len(chunks)
+            for index, (chunk_addr, chunk_len) in enumerate(chunks):
+                count = chunk_len // width if width else chunk_len
+                if index == 0:
+                    chunk_size_x = count
+                if count > 0:
+                    try:
+                        values.extend(formats.unpack_array(data, z_format, count, chunk_addr))
+                    except ValueError:
+                        # A chunk beyond the end of the binary contributes nothing
+                        # rather than aborting the whole tag.
+                        continue
+        if not values:
+            address = parse_address(addr_hex)
+            if address is None:
+                raise ValueError(f"Tag has no usable address ({addr_hex!r}).")
+            count = max(1, length // width if width else length)
+            values = list(formats.unpack_array(data, z_format, count, address))
+            chunk_size_x = chunk_size_y = None
+
+        array = np.array(values, dtype=float)
 
         if as_2d:
-            size_y = 1
-            size_x = num_elements
-            matrix_z = np.array(z_values)
-        else:
-            default_sx = chunk_sx if chunk_sx is not None else min(num_elements, 16)
-            default_sy = chunk_sy if chunk_sy is not None else max(1, num_elements // max(default_sx, 1))
-            
-            size_x = int(custom.get('Size_X', row.get('Size_X', default_sx)))
-            size_y = int(custom.get('Size_Y', row.get('Size_Y', default_sy)))
-            
-            actual_elements = size_x * size_y
+            return array, np.arange(len(array), dtype=float), np.array([0.0]), 1, len(array), addr_hex
 
-            # Truncate or pad to fit matrix
-            z_array = np.array(z_values)
-            if len(z_array) > actual_elements:
-                z_array = z_array[:actual_elements]
-            elif len(z_array) < actual_elements:
-                z_array = np.pad(z_array, (0, actual_elements - len(z_array)), 'constant')
+        custom = self.custom_settings_for(row)
+        default_x = chunk_size_x if chunk_size_x else min(len(array), 16)
+        default_y = chunk_size_y if chunk_size_y else max(1, len(array) // max(default_x, 1))
+        size_x = max(1, int(custom.get("Size_X", row.get("Size_X", default_x)) or default_x))
+        size_y = max(1, int(custom.get("Size_Y", row.get("Size_Y", default_y)) or default_y))
 
-            matrix_z = z_array.reshape((size_y, size_x))
+        wanted = size_x * size_y
+        if len(array) > wanted:
+            array = array[:wanted]
+        elif len(array) < wanted:
+            array = np.pad(array, (0, wanted - len(array)), "constant")
 
-        axis_x = np.arange(size_x)
-        axis_y = np.arange(size_y)
+        matrix = array.reshape((size_y, size_x))
+        return matrix, np.arange(size_x, dtype=float), np.arange(size_y, dtype=float), size_y, size_x, addr_hex
 
-        return matrix_z, axis_x, axis_y, size_y, size_x, addr_hex
-    def val_to_hex(self, val, fmt_char, endian):
+    @staticmethod
+    def _parse_chunks(chunks_str):
+        text = str(chunks_str or "").strip()
+        if not text:
+            return []
         try:
-            v_float = float(val)
-            if fmt_char == 'f':
-                return struct.pack(f"{endian}f", v_float).hex().upper()
-            elif fmt_char.lower() == 'h':
-                return struct.pack(f"{endian}{fmt_char}", int(v_float)).hex().upper()
-            elif fmt_char.lower() in ('i', 'l'):
-                return struct.pack(f"{endian}{fmt_char}", int(v_float)).hex().upper()
-            else:
-                return struct.pack(f"{endian}{fmt_char}", int(v_float)).hex().upper()
-        except:
+            parsed = ast.literal_eval(text)
+        except (ValueError, SyntaxError):
+            return []
+        if not isinstance(parsed, (list, tuple)):
+            return []
+        chunks = []
+        for item in parsed:
+            if isinstance(item, (list, tuple)) and len(item) == 2:
+                try:
+                    chunks.append((int(item[0]), int(item[1])))
+                except (TypeError, ValueError):
+                    continue
+        return chunks
+
+    def value_size_for(self, row):
+        z_format, _ = self._formats_for(row)
+        return formats.value_size(z_format)
+
+    def map_byte_length(self, row):
+        """Bytes occupied by a row's data block, or ``None`` when unknown."""
+        try:
+            size_x = max(1, int(row.get("Size_X", 1) or 1))
+            size_y = max(1, int(row.get("Size_Y", 1) or 1)) if row.get("Map_Type") == "3d" else 1
+        except (TypeError, ValueError):
+            return None
+        return size_x * size_y * self.value_size_for(row)
+
+    def val_to_hex(self, value, fmt):
+        try:
+            return formats.pack_value(value, fmt).hex().upper()
+        except (ValueError, TypeError):
             return "??"
+
+    # ------------------------------------------------------------------
+    # DTC catalogue
+    # ------------------------------------------------------------------
 
     def load_dtc_csv(self):
         self.dtc_data = {}
         if not self.csv_dtc_path or not os.path.exists(self.csv_dtc_path):
-            return False, "DTC CSV not found."
-        
+            return False, f"DTC CSV not found: {self.csv_dtc_path}"
         try:
-            df_dtc = pd.read_csv(self.csv_dtc_path, dtype=str)
-            for _, row in df_dtc.iterrows():
-                wrapper = str(row.get('Wrapper_Addr', '')).strip().upper()
-                if wrapper:
-                    self.dtc_data[wrapper] = {
-                        'map_data_addr': str(row.get('Map_Data_Addr', '')).strip().upper(),
-                        'ram_var': str(row.get('Target_RAM_Var', '')).strip().upper(),
-                        'dtc_func': str(row.get('Potential_DTC_Func', '')).strip()
-                    }
-            return True, ""
-        except Exception as e:
-            return False, str(e)
+            df = pd.read_csv(self.csv_dtc_path, dtype=str).fillna("")
+        except (OSError, ValueError, pd.errors.ParserError) as exc:
+            return False, str(exc)
+
+        for _, row in df.iterrows():
+            entry = {
+                "map_data_addr": _clean_addr(row.get("Map_Data_Addr", "")),
+                "ram_var": _clean_addr(row.get("Target_RAM_Var", "")),
+                "dtc_func": str(row.get("Potential_DTC_Func", "")).strip(),
+                "confidence": str(row.get("Confidence", "")).strip(),
+                "evidence": str(row.get("Evidence", "")).strip(),
+            }
+            # Index under both identities so a lookup works from either CSV.
+            for key in (_clean_addr(row.get("Wrapper_Addr", "")), entry["map_data_addr"]):
+                if key and key not in NULL_ADDRESSES:
+                    self.dtc_data.setdefault(key, entry)
+        return True, ""
+
+    def dtc_for(self, row):
+        for key in self.identity_keys(row):
+            entry = self.dtc_data.get(key)
+            if entry:
+                return entry
+        return None
+
+    # ------------------------------------------------------------------
+    # Projects
+    # ------------------------------------------------------------------
 
     def save_project(self, file_path):
         data = {
+            "format_version": 2,
             "bin_path": self.bin_path,
             "csv_3d_path": self.csv_3d_path,
             "csv_2d_path": self.csv_2d_path,
             "csv_dtc_path": self.csv_dtc_path,
-            "csv_potential_path": getattr(self, 'csv_potential_path', 'potential_maps.csv'),
+            "csv_potential_path": self.csv_potential_path,
             "tags": self.tags,
             "hexdump_tags": self.hexdump_tags,
             "z_format_3d": self.z_format_3d,
             "z_format_2d": self.z_format_2d,
             "ax_format": self.ax_format,
             "custom_map_settings": self.custom_map_settings,
-            "bin_diff": self.get_bin_diff()
+            "bin_diff": self.get_bin_diff(),
         }
         try:
-            with open(file_path, 'w') as f:
-                json.dump(data, f, indent=4)
-            self.project_path = file_path
-            return True, ""
-        except Exception as e:
-            return False, str(e)
+            with open(file_path, "w", encoding="utf-8") as handle:
+                json.dump(data, handle, indent=4, ensure_ascii=False)
+        except OSError as exc:
+            return False, str(exc)
+        self.project_path = file_path
+        return True, ""
+
+    @staticmethod
+    def _coerce_tag_entry(value):
+        """Accept every tag shape ever written by an older version."""
+        if isinstance(value, dict) and "tags" in value:
+            return value
+        if isinstance(value, list):
+            return {"tags": value, "length": 1}
+        if isinstance(value, str):
+            return {"tags": [t.strip() for t in value.split(",") if t.strip()], "length": 1}
+        return None
 
     def load_project(self, file_path):
+        """Load a project. Returns ``(ok, message)``; message may warn on success."""
         if not os.path.exists(file_path):
-            return False, "File not found"
+            return False, f"File not found: {file_path}"
         try:
-            with open(file_path, 'r') as f:
-                data = json.load(f)
-            self.bin_path = data.get("bin_path", "")
-            self.csv_3d_path = data.get("csv_3d_path", "")
-            self.csv_2d_path = data.get("csv_2d_path", "")
-            self.csv_dtc_path = data.get("csv_dtc_path", "2d_and_3D_maps_DTC_Mapped.csv")
-            self.csv_potential_path = data.get("csv_potential_path", "potential_maps.csv")
-            old_tags = data.get("tags", {})
-            self.tags = {}
-            for k, v in old_tags.items():
-                if isinstance(v, dict) and "tags" in v:
-                    self.tags[k] = v
-                elif isinstance(v, list):
-                    self.tags[k] = {"tags": v, "length": 1}
-                elif isinstance(v, str):
-                    self.tags[k] = {"tags": [t.strip() for t in v.split(",") if t.strip()], "length": 1}
-            
-            old_hexdump = data.get("hexdump_tags", {})
-            self.hexdump_tags = {}
-            for k, v in old_hexdump.items():
-                if isinstance(v, dict) and "tags" in v:
-                    self.hexdump_tags[k] = v
-            # To fix previous save where hexdump tags were injected into self.tags but had "chunks"
-            keys_to_move = []
-            for k, v in self.tags.items():
-                if "chunks" in v:
-                    self.hexdump_tags[k] = v
-                    keys_to_move.append(k)
-            for k in keys_to_move:
-                del self.tags[k]
+            with open(file_path, "r", encoding="utf-8") as handle:
+                data = json.load(handle)
+        except (OSError, json.JSONDecodeError) as exc:
+            return False, f"Could not read project: {exc}"
+        if not isinstance(data, dict):
+            return False, "Project file is not a JSON object."
 
-            self.z_format_3d = data.get("z_format_3d", ">H")
-            self.z_format_2d = data.get("z_format_2d", ">f")
-            self.ax_format = data.get("ax_format", "f")
-            self.custom_map_settings = data.get("custom_map_settings", {})
-            self.apply_bin_diff(data.get("bin_diff", {}))
-            
-            self.project_path = file_path
-            return True, ""
-        except Exception as e:
-            return False, str(e)
+        self.bin_path = data.get("bin_path", "")
+        self.csv_3d_path = data.get("csv_3d_path", DEFAULT_CSV_3D)
+        self.csv_2d_path = data.get("csv_2d_path", DEFAULT_CSV_2D)
+        self.csv_dtc_path = data.get("csv_dtc_path", DEFAULT_CSV_DTC)
+        self.csv_potential_path = data.get("csv_potential_path", DEFAULT_CSV_POTENTIAL)
+
+        self.tags = {}
+        for key, value in (data.get("tags") or {}).items():
+            entry = self._coerce_tag_entry(value)
+            if entry:
+                self.tags[_clean_addr(key)] = entry
+
+        self.hexdump_tags = {}
+        for key, value in (data.get("hexdump_tags") or {}).items():
+            entry = self._coerce_tag_entry(value)
+            if entry:
+                self.hexdump_tags[_clean_addr(key)] = entry
+
+        # Older versions wrote hexdump tags (identified by "chunks") into `tags`.
+        for key in [k for k, v in self.tags.items() if "chunks" in v]:
+            self.hexdump_tags[key] = self.tags.pop(key)
+
+        self.z_format_3d = formats.normalise(data.get("z_format_3d", ">H"))
+        self.z_format_2d = formats.normalise(data.get("z_format_2d", ">f"))
+        self.ax_format = formats.type_char(data.get("ax_format", "f"))
+        self.custom_map_settings = {
+            _clean_addr(k): v for k, v in (data.get("custom_map_settings") or {}).items()
+        }
+        self.project_path = file_path
+
+        warnings = []
+        ok, message = self.load_binary()
+        if not ok:
+            warnings.append(message)
+        elif message:
+            warnings.append(message)
+
+        diff = data.get("bin_diff") or {}
+        applied, skipped = self.apply_bin_diff(diff)
+        if diff and not ok:
+            warnings.append(
+                f"{len(diff)} saved byte edit(s) are held in memory and will be "
+                f"applied once a binary is loaded. They are NOT lost."
+            )
+        elif skipped:
+            warnings.append(f"{skipped} saved byte edit(s) fall outside the binary and were dropped.")
+
+        return True, "\n\n".join(w for w in warnings if w)
+
+    # ------------------------------------------------------------------
+    # Hex-view colouring
+    # ------------------------------------------------------------------
 
     def build_color_map(self, highlight_3d=True, highlight_2d=True, highlight_custom=True):
-        self.bin_data = self.get_bin_data()
-        if not self.bin_data: return False
+        """Build the byte -> map-id array backing the hex view overlays.
 
-        self.map_array = [-1] * len(self.bin_data)
+        Uses a numpy array with slice assignment. The previous implementation
+        allocated a 1.5-million-element Python list and filled it one byte at a
+        time in nested loops, which dominated every hex-view refresh.
+        """
+        self.bin_data = self.get_bin_data()
         self.map_dicts = {}
         self.map_dicts_tuples = {}
 
-        def get_bperval(fmt):
-            if not fmt: return 1
-            f = fmt[-1].lower()
-            if f == 'f': return 4
-            elif f == 'h': return 2
-            return 1
+        if not self.bin_data:
+            self.map_array = np.full(0, -1, dtype=np.int32)
+            return False
 
+        self.map_array = np.full(len(self.bin_data), -1, dtype=np.int32)
         map_id = 0
-        csv_addrs = set()
+        painted_addresses = set()
 
-        if highlight_3d and os.path.exists(self.csv_3d_path):
-            try:
-                df3 = pd.read_csv(self.csv_3d_path, dtype=str)
-                bpv = get_bperval(self.z_format_3d)
-                for _, row in df3.iterrows():
-                    addr_str = str(row.get('Map_Z_Addr', '0')).strip()
-                    addr = int(addr_str, 16)
-                    csv_addrs.add(addr)
-                    sx = int(row.get('Size_X', 1))
-                    sy = int(row.get('Size_Y', 1))
-                    length = sx * sy * bpv
-                    if addr + length <= len(self.map_array):
-                        for i in range(addr, addr + length):
-                            self.map_array[i] = map_id
-                        tag_data = self.tags.get(addr_str.upper(), {})
-                        tag_name = ", ".join(tag_data.get("tags", []))
-                        if not tag_name: tag_name = f"3D {addr_str} {sx}x{sy}"
-                            
-                        self.map_dicts_tuples[map_id] = {
-                            'color': (0, 191, 255), # DeepSkyBlue
-                            'tag': tag_name,
-                            'addr': addr
-                        }
-                    map_id += 1
-            except: pass
+        def paint(start, length, colour, label, addr):
+            nonlocal map_id
+            if start is None or start < 0 or length <= 0 or start + length > len(self.map_array):
+                return False
+            self.map_array[start:start + length] = map_id
+            self.map_dicts_tuples[map_id] = {"color": colour, "tag": label, "addr": start}
+            map_id += 1
+            return True
 
-        if highlight_2d and os.path.exists(self.csv_2d_path):
+        catalogue = [
+            (highlight_3d, self.csv_3d_path, "3d", (0, 191, 255), self.z_format_3d),
+            (highlight_2d, self.csv_2d_path, "2d", (50, 205, 50), self.z_format_2d),
+        ]
+
+        for enabled, path, map_type, colour, default_fmt in catalogue:
+            if not enabled or not path or not os.path.exists(path):
+                continue
             try:
-                df2 = pd.read_csv(self.csv_2d_path, dtype=str)
-                bpv = get_bperval(self.z_format_2d)
-                for _, row in df2.iterrows():
-                    addr_str = str(row.get('Curve_Data_Addr', '0')).strip()     
-                    addr = int(addr_str, 16)
-                    csv_addrs.add(addr)
-                    sx = int(row.get('Size_X', 1))
-                    length = sx * bpv
-                    if addr + length <= len(self.map_array):
-                        for i in range(addr, addr + length):
-                            self.map_array[i] = map_id
-                        
-                        tag_data = self.tags.get(addr_str.upper(), {})
-                        tag_name = ", ".join(tag_data.get("tags", []))
-                        if not tag_name: tag_name = f"2D {addr_str} {sx}x1"
-                        
-                        self.map_dicts_tuples[map_id] = {
-                            'color': (50, 205, 50), # LimeGreen
-                            'tag': tag_name,
-                            'addr': addr
-                        }
-                    map_id += 1
-            except: pass
-            
+                df = pd.read_csv(path, dtype=str).fillna("")
+            except (OSError, ValueError, pd.errors.ParserError):
+                continue
+            df = self._normalise_catalogue(df, map_type)
+            df["Map_Type"] = map_type
+
+            for _, row in df.iterrows():
+                address = parse_address(row.get("Data_Addr", ""))
+                if address is None:
+                    continue
+                custom = self.custom_settings_for(row)
+                width = formats.value_size(custom.get("z_format", default_fmt))
+                try:
+                    size_x = max(1, int(row.get("Size_X", 1) or 1))
+                    size_y = max(1, int(row.get("Size_Y", 1) or 1)) if map_type == "3d" else 1
+                except (TypeError, ValueError):
+                    continue
+                label = ", ".join(self._tags_for_addresses(*self.identity_keys(row)))
+                if not label:
+                    label = f"{map_type.upper()} {row['Data_Addr']} {size_x}x{size_y}"
+                if paint(address, size_x * size_y * width, colour, label, address):
+                    painted_addresses.add(address)
+
         if highlight_custom:
-            for source_dict in (self.tags, self.hexdump_tags):
-                for addr_hex, tag_data in source_dict.items():
-                    try:
-                        addr = int(addr_hex, 16)
-                        if addr in csv_addrs:
-                            continue  # Skip 2D/3D map tagging so it remains green/blue
-                        tags_list = tag_data.get("tags", [])
-                        if not tags_list: continue
-
-                        has_painted = False
-                        
-                        chunks = tag_data.get("chunks")
-                        if chunks:
-                            for chunk_start, chunk_len in chunks:
-                                if chunk_start + chunk_len <= len(self.map_array):  
-                                    for i in range(chunk_start, chunk_start + chunk_len):
-                                        if i < len(self.map_array):
-                                            self.map_array[i] = map_id
-                                            has_painted = True
-                        else:
-                            length = tag_data.get("length", 1)
-                            if addr + length <= len(self.map_array):
-                                for i in range(addr, addr + length):
-                                    if i < len(self.map_array):
-                                        self.map_array[i] = map_id
-                                        has_painted = True
-
-                        if has_painted:
-                            tag_name = ", ".join(tags_list)
-                            self.map_dicts_tuples[map_id] = {
-                                'color': (255, 165, 0), # Orange
-                                'tag': tag_name,
-                                'addr': addr
-                            }
-                            map_id += 1
-                    except: pass
+            for source in (self.tags, self.hexdump_tags):
+                for addr_hex, data in source.items():
+                    address = parse_address(addr_hex)
+                    tags_list = data.get("tags", [])
+                    if address is None or not tags_list or address in painted_addresses:
+                        continue
+                    label = ", ".join(tags_list)
+                    chunks = self._parse_chunks(data.get("chunks", "")) or data.get("chunks") or []
+                    if chunks:
+                        first = True
+                        for chunk_start, chunk_len in chunks:
+                            if paint(chunk_start, chunk_len, (255, 165, 0), label if first else "", chunk_start):
+                                first = False
+                    else:
+                        paint(address, int(data.get("length", 1) or 1), (255, 165, 0), label, address)
 
         return True
 
-    def check_map_axes(self, row):
-        """
-        Checks if the map axes are monotonic (increasing or decreasing).
-        Filters out noise/false positives from heuristic scans.
-        """
-        mtype = row.get('Map_Type', '')
-        size_x = int(row.get('Size_X', 1))
-        ax_x_hex = str(row.get('Axis_X_Addr', '0')).strip()
-        
-        # Use endianness from global 3D/2D config and current axis format
-        endian = self.z_format_3d[0] if mtype == '3d' else self.z_format_2d[0]
-        ax_fmt = self.ax_format
-        
-        def is_monotonic(arr):
-            if len(arr) < 2: 
-                return True # Single value maps have no trend to check
-                
-            # Calculate differences between consecutive elements (discrete derivative)
-            diffs = np.diff(arr)
-            
-            # Check if strictly non-decreasing (and increases at least once)
-            is_increasing = np.all(diffs >= 0) and np.any(diffs > 0)
-            # Check if strictly non-increasing (and decreases at least once)
-            is_decreasing = np.all(diffs <= 0) and np.any(diffs < 0)
-            
-            return is_increasing or is_decreasing
+    # ------------------------------------------------------------------
+    # Heuristic filtering
+    # ------------------------------------------------------------------
 
-        # 1. Check X Axis
-        axis_x = self.read_axis(ax_x_hex, size_x, endian, ax_fmt)
-        if not is_monotonic(axis_x):
+    def check_map_axes(self, row):
+        """True when every defined axis is monotonic.
+
+        The discrete derivative of a real calibration axis never changes sign;
+        random bytes that happen to satisfy the struct layout almost always do.
+        This is what separates the ~725 real maps from the ~3,876 candidates the
+        heuristic scanner emits.
+        """
+        _, ax_format = self._formats_for(row)
+
+        def is_monotonic(values):
+            if len(values) < 2:
+                return True
+            diffs = np.diff(values)
+            rising = bool(np.all(diffs >= 0) and np.any(diffs > 0))
+            falling = bool(np.all(diffs <= 0) and np.any(diffs < 0))
+            return rising or falling
+
+        try:
+            size_x = max(1, int(row.get("Size_X", 1) or 1))
+        except (TypeError, ValueError):
             return False
-            
-        # 2. Check Y Axis (3D only)
-        if mtype == '3d' or (mtype == 'tags' and getattr(self, 'hex_plot_mode', '3d') == '3d'):
-            size_y = int(row.get('Size_Y', 1))
-            ax_y_hex = str(row.get('Axis_Y_Addr', '0')).strip()
-            
-            # If a 3D map has no Y axis defined (addr 0), read_axis returns a dummy arange.
-            # is_monotonic() will return True, which correctly avoids discarding it.
-            if ax_y_hex and ax_y_hex not in ('0', '0X0', '00000000'):
-                axis_y = self.read_axis(ax_y_hex, size_y, endian, ax_fmt)
-                if not is_monotonic(axis_y):
-                    return False
-                
+
+        if parse_address(row.get("Axis_X_Addr", "")) is not None:
+            if not is_monotonic(self.read_axis(row.get("Axis_X_Addr", ""), size_x, ax_format)):
+                return False
+
+        if row.get("Map_Type") == "3d" and parse_address(row.get("Axis_Y_Addr", "")) is not None:
+            try:
+                size_y = max(1, int(row.get("Size_Y", 1) or 1))
+            except (TypeError, ValueError):
+                return False
+            if not is_monotonic(self.read_axis(row.get("Axis_Y_Addr", ""), size_y, ax_format)):
+                return False
+
         return True

@@ -4,11 +4,19 @@ Emulates the visual style of Matplotlib's 3D plots including
 solid background panes, grids, and proper axis labeling.
 """
 
+import matplotlib
 import numpy as np
 import pyqtgraph as pg
 import pyqtgraph.opengl as gl
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QStackedWidget
-import matplotlib.cm as cm
+
+# matplotlib.cm.get_cmap() was removed in 3.9; the registry works on 3.5+ too.
+try:
+    JET = matplotlib.colormaps["jet"]
+except AttributeError:  # pragma: no cover - matplotlib < 3.5
+    import matplotlib.cm
+
+    JET = matplotlib.cm.get_cmap("jet")
 
 class PyQtGraphCanvas(QWidget):
     """
@@ -102,8 +110,7 @@ class PyQtGraphCanvas(QWidget):
         y_centered = y - c_y
         z_centered = z_plot - c_z
 
-        cmap = cm.get_cmap('jet')
-        colors = cmap(z_norm_plot) 
+        colors = JET(z_norm_plot)
         colors[..., 3] = 1.0  # Force 100% opacity
 
         self.surface_3d.setData(x=x_centered, y=y_centered, z=z_centered, colors=colors.reshape(-1, 4))

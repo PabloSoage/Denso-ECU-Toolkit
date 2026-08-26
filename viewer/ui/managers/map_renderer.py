@@ -1,481 +1,518 @@
+"""Turns the selected map into a plot and a table.
+
+Previously a single 470-line method inside one bare ``try/except`` that rendered
+every failure as the same opaque "Error:" string on the canvas. Split into
+prepare / plot / table so a decode failure can say which stage broke and why.
+"""
+
+from dataclasses import dataclass, field
+
 import numpy as np
-from PyQt6.QtWidgets import QTableWidgetItem
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QColor
+from PyQt6.QtWidgets import QTableWidgetItem
 
-from widgets.sparkline_widget import SparklineWidget
+from ...core import formats
+from ...core.data_manager import BinaryUnavailable, parse_address
+from ...core.state import AppMode
+from ..components.sparkline_widget import SparklineWidget
+
+MODIFIED_COLOR = QColor(255, 0, 0)
+BASELINE_TEXT_COLOR = QColor(80, 80, 80)
+
+
+@dataclass
+class MapView:
+    """Everything one render pass needs, decoded once."""
+
+    matrix: np.ndarray
+    raw: np.ndarray
+    axis_x: np.ndarray
+    axis_y: np.ndarray
+    size_x: int
+    size_y: int
+    address: str
+    fmt: str
+    factor: float
+    offset: float
+    is_3d: bool
+
+    is_tag_block: bool = False
+    baseline: np.ndarray = None
+    baseline_axis_x: np.ndarray = None
+    baseline_axis_y: np.ndarray = None
+    baseline_size_x: int = 0
+    baseline_size_y: int = 0
+
+    labels: dict = field(default_factory=dict)
+
+    @property
+    def has_baseline(self):
+        return self.baseline is not None
+
+    @property
+    def value_width(self):
+        return formats.value_size(self.fmt)
+
+
+def _tick_labels(values):
+    """Axis tick text without trailing zeros: ``1500.0`` -> ``1500``."""
+    return [str(round(float(v), 2)).rstrip("0").rstrip(".") for v in values]
+
 
 class MapRenderer:
     def __init__(self, main_window):
         self.main_window = main_window
 
+    # ------------------------------------------------------------------
+    # Entry point
+    # ------------------------------------------------------------------
+
     def draw_map(self, auto_scroll=True):
-        if self.main_window.data_manager.df.empty:
-            if self.main_window.btn_main_mode.text() == "Mode: Hex Dump":
-                self.main_window.update_hex_view(auto_scroll=auto_scroll)
+        mw = self.main_window
+
+        if mw.app_mode is AppMode.HEX_DUMP:
+            mw.update_hex_view(auto_scroll=auto_scroll)
+            mw.update_hex_plot()
             return
+
+        row = mw.current_row()
+        if row is None:
+            self.clear("No map selected.")
+            return
+
+        mw.btn_dtc_info.setVisible(mw.data_manager.dtc_for(row) is not None)
+
         try:
-            row = self.main_window.data_manager.df.iloc[self.main_window.data_manager.current_index] 
-            wrapper_addr_hex = str(row['Wrapper_Addr']).strip()
-            custom = getattr(self.main_window.data_manager, "custom_map_settings", {}).get(wrapper_addr_hex, {})
+            view = self._prepare(row)
+        except (BinaryUnavailable, ValueError) as exc:
+            self.clear(str(exc))
+            mw.status_lbl.setText(str(exc))
+            return
 
-            has_dtc = wrapper_addr_hex in getattr(self.main_window.data_manager, 'dtc_data', {})
-            self.main_window.btn_dtc_info.setVisible(has_dtc)
+        # Switching between a curve and a surface needs different axes objects.
+        if getattr(mw, "_last_dim_3d", None) != view.is_3d:
+            mw.rebuild_plot_axes()
+        mw._last_dim_3d = view.is_3d
 
-            current_type = row.get('Map_Type', self.main_window.map_mode)
+        self._publish_state(view)
 
-            # Update toggle button visibility dynamically for 'All' mode
-            if self.main_window.btn_main_mode.text() == "Mode: Map Viewer":
-                self.main_window.btn_hex_plot_mode.setVisible(current_type == 'tags' or self.main_window.map_mode == 'tags')
+        if mw.view_mode.shows_plot:
+            self._render_plot(view)
+        if mw.view_mode.shows_table:
+            self._render_table(view)
 
-            # Auto-rebuild axes if switching between 2D and 3D in 'All' mode    
-            is_currently_3d = hasattr(self.main_window.ax, 'plot_surface')
-            needs_3d = (current_type == '3d' or (current_type == 'tags' and self.main_window.hex_plot_mode == '3d'))
-            if is_currently_3d != needs_3d:
-                self.main_window.rebuild_plot_axes()
-            current_type = row.get('Map_Type', self.main_window.map_mode)
-            
-            # Auto-rebuild axes if switching between 2D and 3D in 'All' mode    
-            is_currently_3d = hasattr(self.main_window.ax, 'plot_surface')
-            needs_3d = (current_type == '3d' or (current_type == 'tags' and self.main_window.hex_plot_mode == '3d'))
-            if is_currently_3d != needs_3d:
-                self.main_window.rebuild_plot_axes()
-            current_type = row.get('Map_Type', self.main_window.map_mode)
-            if current_type == 'tags':
-                is_2d = self.main_window.hex_plot_mode == '2d'
-                raw_matrix, axis_x, axis_y, size_y, size_x, map_addr = self.main_window.data_manager.read_map_tags(as_2d=is_2d)
-                if is_2d:
-                    current_factor = custom.get('factor', self.main_window.factor_z_2d)
-                    current_offset = custom.get('offset', self.main_window.offset_z_2d)
-                    current_fmt = custom.get('z_format', self.main_window.data_manager.z_format_2d)
-                else:
-                    current_factor = custom.get('factor', self.main_window.factor_z_3d)
-                    current_offset = custom.get('offset', self.main_window.offset_z_3d)
-                    current_fmt = custom.get('z_format', self.main_window.data_manager.z_format_3d)
-            elif current_type == '3d':
-                raw_matrix, axis_x, axis_y, size_y, size_x, map_addr = self.main_window.data_manager.read_map_3d()
-                current_factor = custom.get('factor', self.main_window.factor_z_3d)
-                current_offset = custom.get('offset', self.main_window.offset_z_3d)
-                current_fmt = custom.get('z_format', self.main_window.data_manager.z_format_3d)
+    def clear(self, message=""):
+        """Blank the plot and table, optionally showing why."""
+        mw = self.main_window
+        if getattr(mw, "ax", None) is not None:
+            mw.ax.clear()
+            if message:
+                text_fn = getattr(mw.ax, "text2D", mw.ax.text)
+                text_fn(0.5, 0.5, message, transform=mw.ax.transAxes, ha="center",
+                        va="center", color="red", wrap=True)
+            mw.canvas.draw_idle()
+        if getattr(mw, "table", None) is not None:
+            mw.is_updating_table = True
+            mw.table.clear()
+            mw.table.setRowCount(0)
+            mw.table.setColumnCount(0)
+            mw.is_updating_table = False
+        if getattr(mw, "table_orig", None) is not None:
+            mw.table_orig.setVisible(False)
+
+    # ------------------------------------------------------------------
+    # Preparation
+    # ------------------------------------------------------------------
+
+    def _prepare(self, row):
+        mw = self.main_window
+        dm = mw.data_manager
+
+        is_3d = mw.row_is_3d(row)
+        raw, axis_x, axis_y, size_y, size_x, address = dm.read_map(row, as_2d=not is_3d)
+
+        custom = dm.custom_settings_for(row)
+        if is_3d:
+            factor = custom.get("factor", mw.factor_z_3d)
+            offset = custom.get("offset", mw.offset_z_3d)
+            fmt = custom.get("z_format", dm.z_format_3d)
+        else:
+            factor = custom.get("factor", mw.factor_z_2d)
+            offset = custom.get("offset", mw.offset_z_2d)
+            fmt = custom.get("z_format", dm.z_format_2d)
+
+        view = MapView(
+            matrix=raw * factor + offset,
+            raw=raw,
+            axis_x=axis_x,
+            axis_y=axis_y,
+            size_x=size_x,
+            size_y=size_y,
+            address=address,
+            fmt=fmt,
+            factor=factor,
+            offset=offset,
+            is_3d=is_3d,
+            is_tag_block=row.get("Map_Type", "") == "tags",
+        )
+        self._attach_baseline(view, row)
+        self._attach_labels(view, row)
+        return view
+
+    def _attach_baseline(self, view, row):
+        """Populate the comparison side and apply diff/percent transforms."""
+        mw = self.main_window
+        mode = mw.compare_mode
+        if not mode.is_comparison:
+            return
+
+        if mode.uses_reference_map:
+            if mw.reference_matrix is None:
+                return
+            baseline = mw.reference_matrix * view.factor + view.offset
+            view.baseline_axis_x = mw.reference_axis_x
+            view.baseline_axis_y = mw.reference_axis_y
+            view.baseline_size_x = mw.reference_size_x
+            view.baseline_size_y = mw.reference_size_y
+        else:
+            try:
+                result = mw.data_manager.read_map_baseline(row, mode.baseline, as_2d=not view.is_3d)
+            except (BinaryUnavailable, ValueError):
+                return
+            if result is None:
+                return
+            baseline_raw, base_x, base_y, base_sy, base_sx, _ = result
+            baseline = baseline_raw * view.factor + view.offset
+            view.baseline_axis_x = base_x
+            view.baseline_axis_y = base_y
+            view.baseline_size_x = base_sx
+            view.baseline_size_y = base_sy
+
+        view.baseline = baseline
+
+        if mode.subtracts:
+            view.matrix = view.matrix - self._conform(baseline, view.matrix)
+        elif mode.is_percent:
+            aligned = self._conform(baseline, view.matrix)
+            safe = np.where(aligned == 0, 1e-9, aligned)
+            view.matrix = (view.matrix - aligned) / safe * 100.0
+
+    @staticmethod
+    def _conform(baseline, target):
+        """Fit ``baseline`` to ``target``'s shape, zero-padding what is missing.
+
+        Comparing maps of different dimensions is legitimate (a reference map
+        from a different calibration), so a shape mismatch must not abort the
+        render.
+        """
+        if baseline.shape == target.shape:
+            return baseline
+        conformed = np.zeros_like(target, dtype=float)
+        if baseline.ndim == target.ndim == 2:
+            rows = min(baseline.shape[0], target.shape[0])
+            cols = min(baseline.shape[1], target.shape[1])
+            conformed[:rows, :cols] = baseline[:rows, :cols]
+        elif baseline.ndim == target.ndim == 1:
+            count = min(baseline.shape[0], target.shape[0])
+            conformed[:count] = baseline[:count]
+        return conformed
+
+    def _attach_labels(self, view, row):
+        """Axis captions carrying any user tag attached to that address."""
+        tags = self.main_window.data_manager.tags
+
+        def tag_for(column):
+            address = str(row.get(column, "")).strip().upper()
+            if not address or address in ("0", "0X0", "00000000"):
+                return ""
+            return " ".join(tags.get(address, {}).get("tags", []))
+
+        x_tag = tag_for("Axis_X_Addr")
+        y_tag = tag_for("Axis_Y_Addr") if view.is_3d else ""
+        z_tag = tag_for("Data_Addr")
+
+        view.labels = {
+            "x": f"X Axis [{x_tag}]" if x_tag else "X Axis",
+            "y": f"Y Axis [{y_tag}]" if y_tag else "Y Axis",
+            "z": (f"Z Data [{z_tag}]" if z_tag else "Z Data") if view.is_3d
+                 else (f"Curve Data [{z_tag}]" if z_tag else "Curve Data"),
+        }
+
+    def _publish_state(self, view):
+        """Copy render state onto the window for the hover/zoom handlers."""
+        mw = self.main_window
+        mw.real_axis_x = view.axis_x
+        mw.real_axis_y = view.axis_y
+        mw.map_size_x = view.size_x
+        mw.map_size_y = view.size_y
+        mw.z_min = float(view.matrix.min())
+        mw.z_max = float(view.matrix.max())
+        mw.x_label_str = view.labels["x"]
+        mw.y_label_str = view.labels["y"]
+        mw.z_label_3d_str = view.labels["z"]
+        mw.z_label_2d_str = view.labels["z"]
+
+        if mw.compare_mode.is_twin and view.has_baseline:
+            mw.z_orig_min = float(view.baseline.min())
+            mw.z_orig_max = float(view.baseline.max())
+        else:
+            mw.z_orig_min = mw.z_min
+            mw.z_orig_max = mw.z_max
+
+        # Reset the camera only when the selection actually changed.
+        if mw.data_manager.current_map_addr != view.address:
+            mw.data_manager.current_map_addr = view.address
+            self._reset_camera(view)
+
+        mw.lbl_title.setText(
+            f"Map {mw.data_manager.current_index + 1}/{mw.data_manager.total_maps} | "
+            f"Addr: {view.address} | Z: {view.fmt} | Factor: {view.factor}"
+        )
+
+    def _reset_camera(self, view):
+        mw = self.main_window
+        mw.abs_center_x = (view.size_x - 1) / 2.0
+        mw.abs_center_y = (view.size_y - 1) / 2.0
+        mw.center_x = mw.abs_center_x
+        mw.center_y = mw.abs_center_y
+        mw.cam_zoom = 1.0
+
+        x_margin = (view.axis_x.max() - view.axis_x.min()) * 0.05 or 1.0
+        y_margin = (view.matrix.max() - view.matrix.min()) * 0.05 or 1.0
+        mw.abs_xlim = (view.axis_x.min() - x_margin, view.axis_x.max() + x_margin)
+        mw.abs_ylim = (view.matrix.min() - y_margin, view.matrix.max() + y_margin)
+        mw.center_x_2d = sum(mw.abs_xlim) / 2.0
+        mw.center_y_2d = sum(mw.abs_ylim) / 2.0
+        mw.cam_zoom_2d = 1.0
+
+    # ------------------------------------------------------------------
+    # Plot
+    # ------------------------------------------------------------------
+
+    def _render_plot(self, view):
+        mw = self.main_window
+        use_pyqtgraph = mw.render_engine == "pyqtgraph"
+        mw.canvas.setVisible(not use_pyqtgraph)
+        mw.pg_canvas.setVisible(use_pyqtgraph)
+
+        if use_pyqtgraph:
+            if view.is_3d:
+                mw.pg_canvas.draw_3d(
+                    np.arange(view.size_x),
+                    np.arange(view.size_y),
+                    view.matrix,
+                    _tick_labels(view.axis_x),
+                    _tick_labels(view.axis_y),
+                )
             else:
-                raw_matrix, axis_x, _, size_y, size_x, map_addr = self.main_window.data_manager.read_map_2d()
-                current_factor = custom.get('factor', self.main_window.factor_z_2d)
-                current_offset = custom.get('offset', self.main_window.offset_z_2d)
-                current_fmt = custom.get('z_format', self.main_window.data_manager.z_format_2d)
+                mw.pg_canvas.draw_2d(view.axis_x, view.matrix)
+            return
 
-            matrix_z = (raw_matrix * current_factor) + current_offset
-            
-            cmp_index = getattr(self.main_window, "cmb_compare_mode", None)
-            cmp_idx = cmp_index.currentIndex() if cmp_index else 0
-            matrix_orig = None
-            raw_orig = None
+        mw.ax.clear()
+        if hasattr(mw, "ax2"):
+            mw.ax2.clear()
 
-            if cmp_idx > 1:
-                if cmp_idx in (2, 3, 5, 7, 8):
-                    self.main_window.data_manager.show_modified = False
-                    
-                    is_ext_bin = cmp_idx in (7, 8)
-                    temp_cache = None
-                    if is_ext_bin:
-                        if self.main_window.data_manager._reference_bin_data:
-                            temp_cache = self.main_window.data_manager._bin_data_cache
-                            self.main_window.data_manager._bin_data_cache = self.main_window.data_manager._reference_bin_data
-                        else:
-                            is_ext_bin = False
-                    
-                    try:
-                        if current_type == 'tags':
-                            raw_orig, _, _, _, _, _ = self.main_window.data_manager.read_map_tags(as_2d=(self.main_window.hex_plot_mode == '2d'))
-                        elif current_type == '3d':
-                            raw_orig, _, _, _, _, _ = self.main_window.data_manager.read_map_3d()
-                        else:
-                            raw_orig, _, _, _, _, _ = self.main_window.data_manager.read_map_2d()
-                    finally:
-                        if is_ext_bin:
-                            self.main_window.data_manager._bin_data_cache = temp_cache
+        if view.is_3d:
+            self._render_surface(view)
+        else:
+            self._render_curve(view)
+        mw.canvas.draw_idle()
 
-                    self.main_window.data_manager.show_modified = True
-                    matrix_orig = (raw_orig * current_factor) + current_offset
-                    
-                    if cmp_idx in (2, 7):
-                        matrix_z = matrix_z - matrix_orig
-                    elif cmp_idx == 3:
-                        orig_safe = np.where(matrix_orig == 0, 1e-9, matrix_orig)
-                        matrix_z = ((matrix_z - matrix_orig) / orig_safe) * 100
-                elif cmp_idx in (4, 6):
-                    if hasattr(self.main_window, "reference_matrix") and getattr(self.main_window, "reference_matrix", None) is not None:
-                        raw_orig = self.main_window.reference_matrix
-                        matrix_orig = (self.main_window.reference_matrix * current_factor) + current_offset
-                        
-                        if self.main_window.reference_matrix.shape != matrix_z.shape and cmp_idx == 4:
-                            new_orig = np.zeros_like(matrix_z)
-                            if len(matrix_z.shape) == 2 and len(self.main_window.reference_matrix.shape) == 2:
-                                min_y = min(matrix_z.shape[0], self.main_window.reference_matrix.shape[0])
-                                min_x = min(matrix_z.shape[1], self.main_window.reference_matrix.shape[1])
-                                new_orig[:min_y, :min_x] = matrix_orig[:min_y, :min_x]
-                            elif len(matrix_z.shape) == 1 and len(self.main_window.reference_matrix.shape) == 1:
-                                min_x = min(matrix_z.shape[0], self.main_window.reference_matrix.shape[0])
-                                new_orig[:min_x] = matrix_orig[:min_x]
-                            matrix_orig = new_orig
-                        
-                        if cmp_idx == 4:
-                            matrix_z = matrix_z - matrix_orig
+    def _render_surface(self, view):
+        mw = self.main_window
+        grid_x, grid_y = np.meshgrid(np.arange(view.size_x), np.arange(view.size_y))
 
-            clean_axis_x = [str(round(v, 2)).rstrip('0').rstrip('.') for v in axis_x]
-            if (current_type == '3d' or (current_type == 'tags' and self.main_window.hex_plot_mode == '3d')):
-                clean_axis_y = [str(round(v, 2)).rstrip('0').rstrip('.') for v in axis_y]
-                self.main_window.real_axis_y = axis_y
-            
-            self.main_window.real_axis_x = axis_x
+        mw.x_flat = grid_x.flatten()
+        mw.y_flat = grid_y.flatten()
+        mw.z_flat = view.matrix.flatten()
+        mw.raw_flat = view.raw.flatten()
 
-            self.main_window.map_size_x = size_x
-            self.main_window.map_size_y = size_y
-            self.main_window.z_min = matrix_z.min()
-            self.main_window.z_max = matrix_z.max()
-            
-            if cmp_idx in (5, 6, 8) and matrix_orig is not None:
-                self.main_window.z_orig_min = matrix_orig.min()
-                self.main_window.z_orig_max = matrix_orig.max()
-            else:
-                self.main_window.z_orig_min = self.main_window.z_min
-                self.main_window.z_orig_max = self.main_window.z_max
+        mw.ax.plot_surface(grid_x, grid_y, view.matrix, cmap="jet",
+                           edgecolor="k", linewidth=0.3, alpha=0.9)
+        mw.cursor_marker, = mw.ax.plot([0], [0], [0], marker="o", color="red",
+                                       markersize=8, zorder=10)
+        mw.cursor_marker.set_visible(False)
 
-            # Axis Tags logic
-            axis_x_addr = str(row.get('Axis_X_Addr', '')).strip().upper()
-            x_tag = " ".join(self.main_window.data_manager.tags.get(axis_x_addr, {}).get("tags", [])) if axis_x_addr and axis_x_addr not in ('0', '0X0', '00000000') else ""
-            self.main_window.x_label_str = f"X Axis [{x_tag}]" if x_tag else "X Axis"
+        if mw.compare_mode.is_twin and view.has_baseline and hasattr(mw, "ax2"):
+            mw.ax.set_title("Modified Map", fontsize=10, pad=0)
+            mw.ax2.set_title(mw.compare_mode.baseline_title, fontsize=10, pad=0)
+            self._render_baseline_surface(view)
 
-            if (current_type == '3d' or (current_type == 'tags' and self.main_window.hex_plot_mode == '3d')):
-                axis_y_addr = str(row.get('Axis_Y_Addr', '')).strip().upper()
-                y_tag = " ".join(self.main_window.data_manager.tags.get(axis_y_addr, {}).get("tags", [])) if axis_y_addr and axis_y_addr not in ('0', '0X0', '00000000') else ""
-                self.main_window.y_label_str = f"Y Axis [{y_tag}]" if y_tag else "Y Axis"
-            else:
-                self.main_window.y_label_str = "Y Axis"
+        self._decorate_surface(mw.ax, view, _tick_labels(view.axis_x), _tick_labels(view.axis_y))
+        mw.apply_3d_zoom()
 
-            map_addr_col = 'Map_Z_Addr' if (current_type == '3d' or (current_type == 'tags' and self.main_window.hex_plot_mode == '3d')) else 'Curve_Data_Addr'
-            m_addr = str(row.get(map_addr_col, '0')).strip().upper()
-            m_tag = " ".join(self.main_window.data_manager.tags.get(m_addr, {}).get("tags", []))
-            self.main_window.z_label_3d_str = f"Z Data [{m_tag}]" if m_tag else "Z Data"
-            self.main_window.z_label_2d_str = f"Curve Data [{m_tag}]" if m_tag else "Curve Data"
+    def _render_baseline_surface(self, view):
+        mw = self.main_window
+        if view.baseline_size_x and view.baseline.shape == (view.baseline_size_y, view.baseline_size_x):
+            size_x, size_y = view.baseline_size_x, view.baseline_size_y
+            ticks_x = _tick_labels(view.baseline_axis_x)
+            ticks_y = _tick_labels(view.baseline_axis_y)
+        else:
+            size_x, size_y = view.size_x, view.size_y
+            ticks_x = _tick_labels(view.axis_x)
+            ticks_y = _tick_labels(view.axis_y)
 
-            # Added a check to see if we have switched between 3D and 2D
-            needs_3d = (current_type == '3d' or (current_type == 'tags' and self.main_window.hex_plot_mode == '3d'))
-            dim_changed = getattr(self.main_window, '_last_dim_3d', None) != needs_3d
+        grid_x, grid_y = np.meshgrid(np.arange(size_x), np.arange(size_y))
+        matrix = self._conform(view.baseline, np.zeros((size_y, size_x)))
+        mw.ax2.plot_surface(grid_x, grid_y, matrix, cmap="coolwarm",
+                            edgecolor="white", linewidth=0.3, alpha=0.9)
+        self._decorate_surface(mw.ax2, view, ticks_x, ticks_y)
 
-            # Recalculate limits if the map orientation OR the plot dimensionality changes
-            if self.main_window.data_manager.current_map_addr != map_addr or dim_changed:
-                self.main_window.data_manager.current_map_addr = map_addr
-                self.main_window._last_dim_3d = needs_3d
-                
-                self.main_window.abs_center_x = (size_x - 1) / 2.0
-                self.main_window.abs_center_y = (size_y - 1) / 2.0
-                self.main_window.center_x = self.main_window.abs_center_x
-                self.main_window.center_y = self.main_window.abs_center_y
-                self.main_window.cam_zoom = 1.0 
-                
-                x_margin = (axis_x.max() - axis_x.min()) * 0.05
-                if x_margin == 0: x_margin = 1.0
-                y_margin = (matrix_z.max() - matrix_z.min()) * 0.05
-                if y_margin == 0: y_margin = 1.0
-                
-                self.main_window.abs_xlim = (axis_x.min() - x_margin, axis_x.max() + x_margin)
-                self.main_window.abs_ylim = (matrix_z.min() - y_margin, matrix_z.max() + y_margin)
-                self.main_window.center_x_2d = (self.main_window.abs_xlim[0] + self.main_window.abs_xlim[1]) / 2.0
-                self.main_window.center_y_2d = (self.main_window.abs_ylim[0] + self.main_window.abs_ylim[1]) / 2.0
-                self.main_window.cam_zoom_2d = 1.0 
-                
-                x_margin = (axis_x.max() - axis_x.min()) * 0.05
-                if x_margin == 0: x_margin = 1.0
-                y_margin = (matrix_z.max() - matrix_z.min()) * 0.05
-                if y_margin == 0: y_margin = 1.0
-                
-                self.main_window.abs_xlim = (axis_x.min() - x_margin, axis_x.max() + x_margin)
-                self.main_window.abs_ylim = (matrix_z.min() - y_margin, matrix_z.max() + y_margin)
-                self.main_window.center_x_2d = (self.main_window.abs_xlim[0] + self.main_window.abs_xlim[1]) / 2.0
-                self.main_window.center_y_2d = (self.main_window.abs_ylim[0] + self.main_window.abs_ylim[1]) / 2.0
-                self.main_window.cam_zoom_2d = 1.0
-            
-            title = f"Map {self.main_window.data_manager.current_index + 1}/{self.main_window.data_manager.total_maps} | Addr: {map_addr} | Z: {current_fmt} | Factor: {current_factor}"
-            self.main_window.lbl_title.setText(title)
+    def _decorate_surface(self, axes, view, ticks_x, ticks_y):
+        mw = self.main_window
+        axes.set_xticks(np.arange(len(ticks_x)))
+        axes.set_xticklabels(ticks_x, rotation=45, ha="right", fontsize=8)
+        axes.set_yticks(np.arange(len(ticks_y)))
+        axes.set_yticklabels(ticks_y, fontsize=8)
+        axes.set_xlabel("\n" + view.labels["x"], labelpad=12)
+        axes.set_ylabel("\n" + view.labels["y"], labelpad=12)
+        axes.set_zlabel(view.labels["z"], labelpad=12)
+        axes.invert_yaxis()
+        setter = getattr(axes, "set_box_aspect", None)
+        if callable(setter):
+            setter((2.5, 2.0, 0.6))
+        axes.view_init(elev=mw.start_elev, azim=mw.start_azim)
 
-            if self.main_window.btn_main_mode.text() == "Mode: Hex Dump":
-                self.main_window.update_hex_view(auto_scroll=auto_scroll)
-                self.main_window.update_hex_plot()
-            else:
-                if self.main_window.view_mode in ('plot', 'split'):
-                    is_pg = (self.main_window.render_engine == 'pyqtgraph')
-                    self.main_window.canvas.setVisible(not is_pg)
-                    self.main_window.pg_canvas.setVisible(is_pg)
+    def _render_curve(self, view):
+        mw = self.main_window
+        mw.x_flat = view.axis_x
+        mw.z_flat = view.matrix
+        mw.raw_flat = view.raw
 
-                    if is_pg:
-                        if (current_type == '3d' or (current_type == 'tags' and self.main_window.hex_plot_mode == '3d')):
-                            x_grid = np.arange(size_x)
-                            y_grid = np.arange(size_y)
-                            self.main_window.pg_canvas.draw_3d(x_grid, y_grid, matrix_z, clean_axis_x, clean_axis_y)
-                        else:
-                            self.main_window.pg_canvas.draw_2d(axis_x, matrix_z)
-                    else:
-                        self.main_window.ax.clear()
-                        if hasattr(self.main_window, 'ax2'):
-                            self.main_window.ax2.clear()
+        if mw.compare_mode.is_twin and view.has_baseline:
+            baseline_axis = (
+                view.baseline_axis_x
+                if view.baseline_axis_x is not None and len(view.baseline_axis_x) == len(view.baseline)
+                else view.axis_x
+            )
+            mw.ax.plot(baseline_axis, view.baseline, marker="s", color="#888888",
+                       linestyle="--", linewidth=1.5, markersize=4,
+                       label=mw.compare_mode.baseline_title)
+            mw.ax.plot(view.axis_x, view.matrix, marker="o", color="b",
+                       linewidth=2, markersize=5, label="Modified")
+            mw.ax.legend(loc="best")
+        else:
+            mw.ax.plot(view.axis_x, view.matrix, marker="o", color="b",
+                       linewidth=2, markersize=5)
 
-                        if (current_type == '3d' or (current_type == 'tags' and self.main_window.hex_plot_mode == '3d')):
-                            x_grid = np.arange(size_x)
-                            y_grid = np.arange(size_y)
-                            X, Y = np.meshgrid(x_grid, y_grid)
+        mw.cursor_marker, = mw.ax.plot([], [], marker="o", color="red", markersize=8, zorder=10)
+        mw.cursor_marker.set_visible(False)
+        mw.ax.set_xlabel(view.labels["x"])
+        mw.ax.set_ylabel(view.labels["z"])
+        mw.ax.grid(True, linestyle="--", alpha=0.7)
+        mw.apply_2d_zoom()
 
-                            self.main_window.x_flat = X.flatten()
-                            self.main_window.y_flat = Y.flatten()
-                            self.main_window.z_flat = matrix_z.flatten()
-                            self.main_window.raw_flat = raw_matrix.flatten()
+    # ------------------------------------------------------------------
+    # Table
+    # ------------------------------------------------------------------
 
-                            self.main_window.ax.plot_surface(X, Y, matrix_z, cmap='jet', edgecolor='k', linewidth=0.3, alpha=0.9)
-                            self.main_window.cursor_marker, = self.main_window.ax.plot([0], [0], [0], marker='o', color='red', markersize=8, zorder=10)
-                            self.main_window.cursor_marker.set_visible(False)
+    def _render_table(self, view):
+        mw = self.main_window
+        mw.is_updating_table = True
+        try:
+            mw.table.clear()
+            mw.table.setRowCount(view.size_y)
+            mw.table.setColumnCount(view.size_x + 1)  # +1 for the sparkline column
+            mw.table.setHorizontalHeaderLabels(_tick_labels(view.axis_x) + ["Profile"])
+            mw.table.setVerticalHeaderLabels(
+                _tick_labels(view.axis_y) if view.is_3d else ["Curve Data"]
+            )
 
-                            if hasattr(self.main_window, 'ax2') and cmp_idx in (5, 6, 8) and matrix_orig is not None:
-                                self.main_window.ax.set_title("Modified Map", fontsize=10, pad=0)
-                                if cmp_idx in (5, 6):
-                                    self.main_window.ax2.set_title("Original" if cmp_idx == 5 else "Reference Map", fontsize=10, pad=0)
-                                else:
-                                    self.main_window.ax2.set_title("External Bin", fontsize=10, pad=0)
+            matrix = np.atleast_2d(view.matrix)
+            raw = np.atleast_2d(view.raw)
+            raw_min, raw_max = float(raw.min()), float(raw.max())
+            base_address = parse_address(view.address)
+            editable = self._cells_are_editable(view)
 
-                                if cmp_idx == 6 and hasattr(self.main_window, "reference_matrix"):
-                                    orig_x_grid = np.arange(self.main_window.reference_size_x)
-                                    orig_y_grid = np.arange(self.main_window.reference_size_y)
-                                    X_orig, Y_orig = np.meshgrid(orig_x_grid, orig_y_grid)
-                                    orig_clean_axis_x = [str(round(v, 2)).rstrip('0').rstrip('.') for v in self.main_window.reference_axis_x]
-                                    orig_clean_axis_y = [str(round(v, 2)).rstrip('0').rstrip('.') for v in self.main_window.reference_axis_y]
-                                else:
-                                    orig_x_grid, orig_y_grid = x_grid, y_grid
-                                    X_orig, Y_orig = X, Y
-                                    orig_clean_axis_x, orig_clean_axis_y = clean_axis_x, clean_axis_y
+            for r in range(view.size_y):
+                for c in range(view.size_x):
+                    index = r * view.size_x + c
+                    address = None if base_address is None else base_address + index * view.value_width
+                    mw.table.setItem(r, c, self._make_item(view, matrix[r, c], raw[r, c], address, editable))
+                mw.table.setCellWidget(
+                    r, view.size_x,
+                    SparklineWidget(raw[r, :], raw_min, raw_max, mw.sparkline_style.value),
+                )
 
-                                self.main_window.ax2.plot_surface(X_orig, Y_orig, matrix_orig, cmap='coolwarm', edgecolor='white', linewidth=0.3, alpha=0.9)
-                                self.main_window.ax2.set_xticks(orig_x_grid)
-                                self.main_window.ax2.set_xticklabels(orig_clean_axis_x, rotation=45, ha='right', fontsize=8)
-                                self.main_window.ax2.set_yticks(orig_y_grid)
-                                self.main_window.ax2.set_yticklabels(orig_clean_axis_y, fontsize=8)
-                                self.main_window.ax2.set_xlabel('\n' + self.main_window.x_label_str, labelpad=12)
-                                self.main_window.ax2.set_ylabel('\n' + self.main_window.y_label_str, labelpad=12)
-                                self.main_window.ax2.set_zlabel(self.main_window.z_label_3d_str, labelpad=12)
-                                self.main_window.ax2.invert_yaxis()
-                                try: self.main_window.ax2.set_box_aspect((2.5, 2.0, 0.6))
-                                except: pass
-                                self.main_window.ax2.view_init(elev=self.main_window.start_elev, azim=self.main_window.start_azim)
+            self._render_baseline_table(view)
+            mw.table.resizeColumnsToContents()
+            mw.table.setColumnWidth(view.size_x, 150)
+        finally:
+            mw.is_updating_table = False
 
-                            self.main_window.ax.set_xticks(x_grid)
-                            self.main_window.ax.set_xticklabels(clean_axis_x, rotation=45, ha='right', fontsize=8)
-                            self.main_window.ax.set_yticks(y_grid)
-                            self.main_window.ax.set_yticklabels(clean_axis_y, fontsize=8)
+    def _cells_are_editable(self, view):
+        """Editing is only meaningful on a confirmed map shown as-is.
 
-                            self.main_window.ax.set_xlabel('\n' + self.main_window.x_label_str, labelpad=12)
-                            self.main_window.ax.set_ylabel('\n' + self.main_window.y_label_str, labelpad=12)
-                            self.main_window.ax.set_zlabel(self.main_window.z_label_3d_str, labelpad=12)
+        Hexdump tags are excluded because a tag can span several disjoint
+        chunks, so a cell's position in the grid does not map back to a single
+        contiguous address range.
+        """
+        mw = self.main_window
+        return not (
+            mw.compare_mode.is_comparison
+            or mw.app_mode.is_read_only
+            or view.is_tag_block
+            or view.address == ""
+        )
 
-                            self.main_window.ax.invert_yaxis()
-                            try: self.main_window.ax.set_box_aspect((2.5, 2.0, 0.6))
-                            except: pass
+    def _make_item(self, view, value, raw_value, address, editable):
+        mw = self.main_window
+        if mw.display_hex:
+            source = value if mw.apply_factor_to_hex else raw_value
+            text = mw.data_manager.val_to_hex(source, view.fmt)
+        else:
+            text = f"{value:.2f}"
 
-                            self.main_window.ax.view_init(elev=self.main_window.start_elev, azim=self.main_window.start_azim)
-                            self.main_window.apply_3d_zoom()
+        item = QTableWidgetItem(text)
+        item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
 
-                        elif (current_type == '2d' or (current_type == 'tags' and self.main_window.hex_plot_mode == '2d')):
-                            self.main_window.x_flat = axis_x
-                            self.main_window.z_flat = matrix_z
-                            self.main_window.raw_flat = raw_matrix
+        if address is not None and mw.data_manager.is_map_modified(address, view.value_width):
+            item.setForeground(MODIFIED_COLOR)
 
-                            if cmp_idx in (5, 6, 8) and matrix_orig is not None:
-                                if cmp_idx == 6 and hasattr(self.main_window, "reference_matrix"):
-                                    orig_ax = self.main_window.reference_axis_x
-                                else:
-                                    orig_ax = axis_x
-                                lbl = 'Original' if cmp_idx in (5, 2, 3) else 'Ext. Bin' if cmp_idx in (7, 8) else 'Reference Map'
-                                self.main_window.ax.plot(orig_ax, matrix_orig, marker='s', color='#888888', linestyle='--', linewidth=1.5, markersize=4, label=lbl)
-                                self.main_window.ax.plot(axis_x, matrix_z, marker='o', color='b', linewidth=2, markersize=5, label='Modified')
-                                self.main_window.ax.legend(loc='best')
-                            else:
-                                self.main_window.ax.plot(axis_x, matrix_z, marker='o', color='b', linewidth=2, markersize=5)
-                            
-                            self.main_window.cursor_marker, = self.main_window.ax.plot([], [], marker='o', color='red', markersize=8, zorder=10)
-                            self.main_window.cursor_marker.set_visible(False)
+        if editable and address is not None:
+            item.setData(Qt.ItemDataRole.UserRole, {
+                "address": address,
+                "fmt": view.fmt,
+                "factor": view.factor,
+                "offset": view.offset,
+                "apply_factor_to_hex": mw.apply_factor_to_hex,
+                "display_hex": mw.display_hex,
+            })
+        else:
+            item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+        return item
 
-                            self.main_window.ax.set_xlabel(self.main_window.x_label_str)
-                            self.main_window.ax.set_ylabel(self.main_window.z_label_2d_str)
-                            self.main_window.ax.grid(True, linestyle='--', alpha=0.7)
-                            self.main_window.apply_2d_zoom()
+    def _render_baseline_table(self, view):
+        mw = self.main_window
+        if not (mw.compare_mode.is_twin and view.has_baseline):
+            mw.table_orig.setVisible(False)
+            return
 
-                        self.main_window.canvas.draw_idle()
+        baseline = np.atleast_2d(view.baseline)
+        size_y, size_x = baseline.shape
 
-            if self.main_window.view_mode in ('table', 'split'):
-                self.main_window.is_updating_table = True
-                self.main_window.table.clear()
-                self.main_window.table.setRowCount(size_y)
-                if cmp_idx in (5, 6, 8) and matrix_orig is not None:
-                    if cmp_idx == 6 and hasattr(self.main_window, "reference_matrix"):
-                        orig_sz_y = self.main_window.reference_size_y
-                        orig_sz_x = self.main_window.reference_size_x
-                        orig_cx = [str(round(v, 2)).rstrip('0').rstrip('.') for v in self.main_window.reference_axis_x]
-                        orig_cy = [str(round(v, 2)).rstrip('0').rstrip('.') for v in self.main_window.reference_axis_y]
-                    else:
-                        orig_sz_y, orig_sz_x = size_y, size_x
-                        orig_cx, orig_cy = clean_axis_x, clean_axis_y
+        mw.table_orig.setVisible(True)
+        mw.table_orig.clear()
+        mw.table_orig.setRowCount(size_y)
+        mw.table_orig.setColumnCount(size_x)
 
-                    self.main_window.table_orig.setVisible(True)
-                    self.main_window.table_orig.clear()
-                    self.main_window.table_orig.setRowCount(orig_sz_y)
-                    self.main_window.table_orig.setColumnCount(orig_sz_x)
-                    self.main_window.table_orig.setHorizontalHeaderLabels(orig_cx)
-                    if (current_type == '3d' or (current_type == 'tags' and self.main_window.hex_plot_mode == '3d')):
-                        self.main_window.table_orig.setVerticalHeaderLabels(orig_cy)
-                    else:
-                        self.main_window.table_orig.setVerticalHeaderLabels(["Curve Data"])
-                else:
-                    self.main_window.table_orig.setVisible(False)
+        axis_x = view.baseline_axis_x if view.baseline_axis_x is not None else view.axis_x
+        axis_y = view.baseline_axis_y if view.baseline_axis_y is not None else view.axis_y
+        mw.table_orig.setHorizontalHeaderLabels(_tick_labels(axis_x)[:size_x])
+        mw.table_orig.setVerticalHeaderLabels(
+            _tick_labels(axis_y)[:size_y] if view.is_3d else ["Curve Data"]
+        )
 
-                # Sum +1 for the Sparkline column
-                self.main_window.table.setColumnCount(size_x + 1)
-                headers = clean_axis_x + ["Profile"]
-                self.main_window.table.setHorizontalHeaderLabels(headers)
+        for r in range(size_y):
+            for c in range(size_x):
+                value = baseline[r, c]
+                text = (mw.data_manager.val_to_hex(value, view.fmt)
+                        if mw.display_hex else f"{value:.2f}")
+                item = QTableWidgetItem(text)
+                item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                item.setForeground(BASELINE_TEXT_COLOR)
+                mw.table_orig.setItem(r, c, item)
 
-                # Calculate the global min and max for proper scaling of green bars
-                raw_min = raw_matrix.min()
-                raw_max = raw_matrix.max()
-
-                f_char = current_fmt[-1].lower()
-                if f_char == 'f': bpv = 4
-                elif f_char == 'h': bpv = 2
-                elif f_char in ('i', 'l'): bpv = 4
-                else: bpv = 1
-                base_addr = int(map_addr, 16)
-
-                if (current_type == '3d' or (current_type == 'tags' and self.main_window.hex_plot_mode == '3d')):
-                    self.main_window.table.setVerticalHeaderLabels(clean_axis_y)
-                    for i in range(size_y):
-                        for j in range(size_x):
-                            if self.main_window.display_hex:
-                                v = matrix_z[i, j] if self.main_window.apply_factor_to_hex else raw_matrix[i, j]
-                                val_str = self.main_window.data_manager.val_to_hex(v, current_fmt[-1], current_fmt[0])
-                            else:
-                                val_str = f"{matrix_z[i, j]:.2f}"
-
-                            item = QTableWidgetItem(val_str)
-                            item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-                            if getattr(self.main_window.data_manager, 'show_modified', True) and self.main_window.data_manager._modified_bin_data:
-                                cell_addr = base_addr + (i * size_x + j) * bpv
-                                if self.main_window.data_manager._bin_data_cache[cell_addr:cell_addr+bpv] != self.main_window.data_manager._modified_bin_data[cell_addr:cell_addr+bpv]:
-                                    item.setForeground(QColor(255, 0, 0))
-                            
-                            is_potential = self.main_window.btn_main_mode.text() == "Mode: Potential Maps"
-                            if current_type != 'tags' and not (cmp_index and cmp_index.currentIndex() > 1) and not is_potential:
-                                item.setData(Qt.ItemDataRole.UserRole, {
-                                    "address": base_addr + (i * size_x + j) * bpv,
-                                    "fmt_char": current_fmt[-1],
-                                    "endian": current_fmt[0],
-                                    "factor": current_factor,
-                                    "offset": current_offset,
-                                    "apply_factor_to_hex": self.main_window.apply_factor_to_hex,
-                                    "display_hex": self.main_window.display_hex
-                                })
-                            else:
-                                item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
-
-                            self.main_window.table.setItem(i, j, item)
-
-                        # Insert Sparkline
-                        spark = SparklineWidget(raw_matrix[i, :], raw_min, raw_max, self.main_window.sparkline_style)
-                        self.main_window.table.setCellWidget(i, size_x, spark)
-
-                else:
-                    self.main_window.table.setVerticalHeaderLabels(["Curve Data"])
-                    for j in range(size_x):
-                        if self.main_window.display_hex:
-                            v = matrix_z[j] if self.main_window.apply_factor_to_hex else raw_matrix[j]
-                            val_str = self.main_window.data_manager.val_to_hex(v, current_fmt[-1], current_fmt[0])
-                        else:
-                            val_str = f"{matrix_z[j]:.2f}"
-
-                        item = QTableWidgetItem(val_str)
-                        item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-                        if getattr(self.main_window.data_manager, 'show_modified', True) and self.main_window.data_manager._modified_bin_data:
-                            cell_addr = base_addr + (j) * bpv
-                            if self.main_window.data_manager._bin_data_cache[cell_addr:cell_addr+bpv] != self.main_window.data_manager._modified_bin_data[cell_addr:cell_addr+bpv]:
-                                item.setForeground(QColor(255, 0, 0))
-
-                        is_potential = self.main_window.btn_main_mode.text() == "Mode: Potential Maps"
-                        if current_type != 'tags' and not (cmp_index and cmp_index.currentIndex() > 1) and not is_potential:
-                            item.setData(Qt.ItemDataRole.UserRole, {
-                                "address": base_addr + (j) * bpv,
-                                "fmt_char": current_fmt[-1],
-                                "endian": current_fmt[0],
-                                "factor": current_factor,
-                                "offset": current_offset,
-                                "apply_factor_to_hex": self.main_window.apply_factor_to_hex,
-                                "display_hex": self.main_window.display_hex
-                            })
-                        else:
-                            item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
-
-                        self.main_window.table.setItem(0, j, item)
-
-                    # Insert Sparkline 2D
-                    spark = SparklineWidget(raw_matrix, raw_min, raw_max, self.main_window.sparkline_style)
-                    self.main_window.table.setCellWidget(0, size_x, spark)
-                if cmp_idx in (5, 6, 8) and matrix_orig is not None:
-                    is_3d = (current_type == '3d' or (current_type == 'tags' and self.main_window.hex_plot_mode == '3d'))
-                    if cmp_idx == 6 and hasattr(self.main_window, "reference_matrix"):
-                        orig_sz_y = self.main_window.reference_size_y
-                        orig_sz_x = self.main_window.reference_size_x
-                    else:
-                        orig_sz_y, orig_sz_x = size_y, size_x
-                    
-                    if is_3d:
-                        for i in range(orig_sz_y):
-                            for j in range(orig_sz_x):
-                                if self.main_window.display_hex:
-                                    vo = int(matrix_orig[i, j])
-                                    vo_str = self.main_window.data_manager.val_to_hex(vo, current_fmt[-1], current_fmt[0])
-                                else:
-                                    vo_str = f"{matrix_orig[i, j]:.2f}"
-                                item_orig = QTableWidgetItem(vo_str)
-                                item_orig.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-                                item_orig.setFlags(item_orig.flags() & ~Qt.ItemFlag.ItemIsEditable)
-                                item_orig.setForeground(QColor(80, 80, 80))
-                                self.main_window.table_orig.setItem(i, j, item_orig)
-                    else:
-                        for j in range(orig_sz_x):
-                            if self.main_window.display_hex:
-                                vo = matrix_orig[j]
-                                vo_str = self.main_window.data_manager.val_to_hex(vo, current_fmt[-1], current_fmt[0])
-                            else:
-                                vo_str = f"{matrix_orig[j]:.2f}"
-                            item_orig = QTableWidgetItem(vo_str)
-                            item_orig.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-                            item_orig.setFlags(item_orig.flags() & ~Qt.ItemFlag.ItemIsEditable)
-                            item_orig.setForeground(QColor(80, 80, 80))
-                            self.main_window.table_orig.setItem(0, j, item_orig)
-
-
-
-
-
-                self.main_window.table.resizeColumnsToContents()
-                self.main_window.table.setColumnWidth(size_x, 150)
-                if cmp_idx in (5, 6, 8) and matrix_orig is not None:
-                    self.main_window.table_orig.resizeColumnsToContents()
-                self.main_window.is_updating_table = False
-
-        except Exception as e:
-            import traceback
-            traceback.print_exc()
-            self.main_window.is_updating_table = False
-            if self.main_window.view_mode in ('plot', 'split'):
-                self.main_window.ax.clear()
-                if hasattr(self.main_window.ax, 'text2D'):
-                    self.main_window.ax.text2D(0.5, 0.5, f"Error:\n{str(e)}", transform=self.main_window.ax.transAxes, ha='center', color='red')
-                else:
-                    self.main_window.ax.text(0.5, 0.5, f"Error:\n{str(e)}", transform=self.main_window.ax.transAxes, ha='center', color='red')
-                self.main_window.canvas.draw_idle()
-            if self.main_window.view_mode in ('table', 'split'):
-                self.main_window.table.clear()
-
+        mw.table_orig.resizeColumnsToContents()

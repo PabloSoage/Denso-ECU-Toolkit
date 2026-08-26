@@ -1,0 +1,13 @@
+* text=auto eol=lf
+
+*.py text
+*.md text
+*.csv text
+*.dproj text
+*.toml text
+*.yml text
+
+*.bin binary
+*.gbf binary
+*.gpr binary
+*.png binary

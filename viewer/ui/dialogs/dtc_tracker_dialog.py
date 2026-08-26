@@ -1,52 +1,79 @@
-from PyQt6.QtWidgets import QDialog, QVBoxLayout, QFormLayout, QLabel, QPushButton, QFrame
+"""Shows the RAM variable and consumer function linked to a map."""
+
 from PyQt6.QtCore import Qt
+from PyQt6.QtWidgets import (
+    QDialog,
+    QFormLayout,
+    QFrame,
+    QLabel,
+    QPushButton,
+    QVBoxLayout,
+)
+
+CONFIDENCE_COLORS = {
+    "high": "#5cb85c",
+    "medium": "#f0ad4e",
+    "low": "#d9534f",
+}
+
 
 class DtcTrackerDialog(QDialog):
     def __init__(self, dtc_info, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Diagnostic Link (DTC Tracker)")
-        self.setMinimumWidth(400)
-        
+        self.setWindowTitle("Diagnostic Link")
+        self.setMinimumWidth(460)
+
         layout = QVBoxLayout(self)
-        
-        # Título
-        title = QLabel("<b>DTC Forward Taint Analysis</b>")
+
+        title = QLabel("<b>Forward dataflow from this map</b>")
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(title)
-        
-        line = QFrame()
-        line.setFrameShape(QFrame.Shape.HLine)
-        line.setFrameShadow(QFrame.Shadow.Sunken)
-        layout.addWidget(line)
-        
-        # Formulario de datos
+
+        rule = QFrame()
+        rule.setFrameShape(QFrame.Shape.HLine)
+        rule.setFrameShadow(QFrame.Shadow.Sunken)
+        layout.addWidget(rule)
+
         form = QFormLayout()
-        
-        lbl_sensor = QLabel(f"<b>{dtc_info.get('map_data_addr', 'N/A')}</b>")
-        lbl_sensor.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        form.addRow("Sensor / Map Curve:", lbl_sensor)
-        
-        lbl_ram = QLabel(f"<b style='color: #d9534f;'>{dtc_info.get('ram_var', 'N/A')}</b>")
-        lbl_ram.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        form.addRow("Associated RAM Flag:", lbl_ram)
-        
-        lbl_func = QLabel(f"<b style='color: #5cb85c;'>{dtc_info.get('dtc_func', 'N/A')}</b>")
-        lbl_func.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        form.addRow("Diagnostic Task Func:", lbl_func)
-        
+        form.addRow("Map / Curve Data:", self._value(dtc_info.get("map_data_addr")))
+        form.addRow("Result RAM Variable:", self._value(dtc_info.get("ram_var"), "#d9534f"))
+        form.addRow("Consumer Function:", self._value(dtc_info.get("dtc_func"), "#5cb85c"))
+
+        confidence = str(dtc_info.get("confidence", "")).strip()
+        if confidence:
+            colour = CONFIDENCE_COLORS.get(confidence.lower(), "#333")
+            form.addRow("Confidence:", self._value(confidence, colour))
+
+        evidence = str(dtc_info.get("evidence", "")).strip()
+        if evidence:
+            form.addRow("Evidence:", self._value(evidence))
+
         layout.addLayout(form)
-        
-        # Tip
-        tip_box = QLabel(
-            "<i><b>Tip for DTC Off:</b> Check cross-references for "
-            f"{dtc_info.get('dtc_func', 'this function')} to locate and patch "
-            "the branch instructions triggering the fault state.</i>"
+
+        # Stated plainly: this is a dataflow link, not proof of a diagnostic.
+        note = QLabel(
+            "<i>The RAM variable is where the interpolation result is stored. "
+            "The consumer function is the first <b>other</b> function that reads "
+            "it — it is a lead, not proof that it manages a DTC. Confirm it in "
+            "Ghidra by checking the cross-references before patching anything.</i>"
         )
-        tip_box.setWordWrap(True)
-        tip_box.setStyleSheet("background-color: #f8f9fa; color: #333; padding: 10px; border-radius: 5px; border: 1px solid #ccc;")
-        layout.addWidget(tip_box)
-        
-        # Botón de cierre
-        btn_close = QPushButton("Close")
-        btn_close.clicked.connect(self.accept)
-        layout.addWidget(btn_close)
+        note.setWordWrap(True)
+        note.setStyleSheet(
+            "background-color: #f8f9fa; color: #333; padding: 10px;"
+            "border-radius: 5px; border: 1px solid #ccc;"
+        )
+        layout.addWidget(note)
+
+        close = QPushButton("Close")
+        close.clicked.connect(self.accept)
+        layout.addWidget(close)
+
+    @staticmethod
+    def _value(text, colour=None):
+        label = QLabel(
+            f"<b style='color: {colour};'>{text or 'N/A'}</b>" if colour
+            else f"<b>{text or 'N/A'}</b>"
+        )
+        label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        label.setWordWrap(True)
+        return label
