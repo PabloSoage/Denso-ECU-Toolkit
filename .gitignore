@@ -1,6 +1,30 @@
-.venv
-*.lock*
-tmp*
+# Private research data: firmware, decompiled sources and the Ghidra project.
+# Clone it here if you have access:
+#   git clone git@github.com:PabloSoage/denso-a17-research.git research
+/research/
+
+# Python
+.venv/
+venv/
 __pycache__/
-*.pyc
-.idea
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
+
+# Ghidra
+*.lock
+*.lock~
+ghidra_*.log
+
+# Editors / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Scratch
+tmp*
+*.bak
