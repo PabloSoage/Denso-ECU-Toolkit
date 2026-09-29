@@ -115,6 +115,17 @@ size.
 
 Then copy `Scripts/` into your `ghidra_scripts` directory.
 
+**Or headless, in one command** — `SetupDensoImage.py` does the memory map and
+seeds functions from the SH vector table, and `AnalyzeDensoMaps.py` then finds
+the master functions and extracts the catalogue (steps 3 and 4):
+
+```bash
+analyzeHeadless <project_dir> <name> -import image.bin     -processor SuperH:BE:32:SH-2A -loader BinaryLoader -loader-baseAddr 0x0     -scriptPath Scripts -preScript SetupDensoImage.py     -postScript AnalyzeDensoMaps.py <out_dir>
+```
+
+On the reference image this reproduces the published catalogue: the same two
+master functions, and 398 3D maps identical row for row to `3d_maps_review.csv`.
+
 ### 2. Heuristic discovery
 
 Run **`AnalyzePotentialDensoMaps.py`** → `potential_maps.csv`.
@@ -124,7 +135,11 @@ an element width for, and how many memory reads failed.
 
 ### 3. Find the master interpolation functions
 
-They differ between calibrations, so locate them once per image:
+They differ between calibrations. `AnalyzeDensoMaps.py` now finds them itself:
+it ranks every function called at least 20 times by how many of its call sites
+pass a valid descriptor in `R4`, and offers the winners as defaults. On the
+reference image that is `000080E4` (423 of 462 calls) and `00008070` (330 of 336).
+To check them by hand:
 
 1. Open the viewer, ⚙ **Global Settings** → *Main Application Mode: Potential
    Maps*, and point it at `potential_maps.csv`.
@@ -140,7 +155,9 @@ For the reference image they are `000080E4` (3D) and `00008070` (2D).
 
 ### 4. Mass extraction
 
-Run **`AnalyzeDensoMaps.py`**. It asks for both addresses and writes
+Run **`AnalyzeDensoMaps.py`**. Interactively it asks for both addresses (with
+the detected ones as defaults) and where to save; headless it takes an output
+directory, and optionally the two addresses, as script arguments. It writes
 `3d_maps_review.csv` and `2d_maps_review.csv`.
 
 It resolves each call's argument through `R4` (the SH argument register),
@@ -157,10 +174,40 @@ read it, with a confidence score.
 > This is a **lead**, not proof that a DTC was found. The output and the UI both
 > say so. Confirm in Ghidra before patching anything.
 
-### 6. Read, compare, patch
+### 6. Units from the descriptors
+
+Each descriptor carries the element type, a factor and an offset
+([`docs/findings.md`](docs/findings.md) §2). Save a project with the catalogue,
+then:
+
+```bash
+python tools/apply_descriptor_formats.py project.dproj   # per-map format, factor, offset
+python tools/dump_map.py image.bin <Struct_Addr>          # one map, in physical units
+```
+
+Rows need a `Struct_Addr`, which the current `AnalyzeDensoMaps.py` writes. Maps
+that already have a per-map override keep it unless you pass `--overwrite`.
+
+### 7. Read, compare, patch
 
 In the viewer: ⚙ **Global Settings** → load the CSVs and the binary → *Main
 Application Mode: Map Viewer*.
+
+### 8. Following the code (optional)
+
+* **`DecompileAt.py <out> ADDR…`** writes the decompiled C of the functions containing
+  those addresses.
+* **`RamCrossRefs.py <out> RAMADDR…`** lists the functions that reach a RAM global
+  through a literal pool and decompiles them. It does not tell reads from writes.
+* **`tools/annotate_decompiled.py`** rewrites that C so each `PTR_…`/`DAT_…` slot shows
+  what it holds: `v_FFFFxxxx`, `MAP3D_xxxxxx[nx×ny]`, or a name you pass with
+  `--name`.
+* **`tools/compare_calibrations.py A.bin A_3d.csv B.bin B_3d.csv [--tags A.dproj]`**
+  pairs the maps of two calibrations by identical axes and reports which data
+  differ. Tags carried over with `--tags` are leads, not names.
+
+Run the two Ghidra scripts headless on an analysed project with
+`-process <image> -noanalysis -postScript …`.
 
 ---
 
@@ -203,11 +250,13 @@ maps in the list. Export writes the patched image.
 ## Project layout
 
 ```
-Scripts/                    Ghidra Jython scripts
+Scripts/                    Ghidra Jython scripts (setup, extraction, decompile, RAM xrefs)
+tools/                      command-line helpers (descriptor formats, dumps, comparison)
 viewer/
   core/                     data model — no Qt imports
     state.py                the enums that define application state
     formats.py              struct format widths and conversions
+    descriptor.py           map descriptors: dimensions, element type, factor, offset
     data_manager.py         binary, catalogue, tags, projects
     integrity.py            what changed, and the checksum warning
   ui/

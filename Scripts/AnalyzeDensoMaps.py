@@ -24,8 +24,19 @@
 # Failures are counted and reported instead of being swallowed, so a run that
 # finds fewer maps than expected says why.
 #
+# It also finds the two master functions itself: every function called at least
+# MIN_CALLS times is ranked by how many of its call sites pass a valid 3D or 2D
+# descriptor in R4. On the reference image this picks 000080E4 (423 of 462 calls)
+# and 00008070 (330 of 336), the addresses found by hand.
+#
+# Headless: pass an output directory, and optionally the two addresses:
+#   analyzeHeadless ... -postScript AnalyzeDensoMaps.py <out_dir> [3D_hex 2D_hex]
+# Interactive: the detected addresses are offered as the defaults.
+#
 # @category ECU_ReverseEngineering
 # @runtime Jython
+
+import os
 
 import java.lang.Exception as JavaException
 from ghidra.program.model.lang import Register
@@ -33,6 +44,7 @@ from ghidra.program.model.mem import MemoryAccessException
 
 ARG_REGISTER = "r4"
 MAX_LOOKBACK = 24
+MIN_CALLS = 20
 
 RAM_BASE = 0xFFFF0000
 MAX_AXIS_3D = 64
@@ -295,6 +307,47 @@ def write_csv(path, results, is_3d):
     print("Saved {} rows to {}".format(len(results), path))
 
 
+def rank_callees(program):
+    """``[(entry, calls, valid_3d, valid_2d)]`` for every function called often enough."""
+    listing = program.getListing()
+    memory = program.getMemory()
+    ranking = []
+    for function in program.getFunctionManager().getFunctions(True):
+        calls = [r.getFromAddress() for r in getReferencesTo(function.getEntryPoint())
+                 if r.getReferenceType().isCall()]
+        if len(calls) < MIN_CALLS:
+            continue
+        valid_3d = valid_2d = 0
+        for call in calls:
+            try:
+                descriptor = resolve_descriptor_address(listing, memory, call)
+                if descriptor is None:
+                    continue
+                if decode_3d(memory, descriptor):
+                    valid_3d += 1
+                elif decode_2d(memory, descriptor):
+                    valid_2d += 1
+            except (MemoryAccessException, JavaException):
+                continue
+        ranking.append((function.getEntryPoint().getOffset(), len(calls), valid_3d, valid_2d))
+    return ranking
+
+
+def detect_masters(program):
+    """Best-scoring 3D and 2D master candidates, printed with the runners-up."""
+    ranking = rank_callees(program)
+    if not ranking:
+        return None, None
+    print("Candidates (entry, calls, 3D-shaped, 2D-shaped):")
+    for entry, calls, v3, v2 in sorted(ranking, key=lambda t: -(t[2] + t[3]))[:8]:
+        print("  %08X  %5d  %5d  %5d" % (entry, calls, v3, v2))
+    best_3d = max(ranking, key=lambda t: t[2])
+    rest = [t for t in ranking if t[0] != best_3d[0]]
+    best_2d = max(rest, key=lambda t: t[3]) if rest else None
+    return (best_3d[0] if best_3d[2] else None,
+            best_2d[0] if best_2d and best_2d[3] else None)
+
+
 def ask_address(prompt, default):
     try:
         text = askString(prompt, "Address (hex):", default)
@@ -316,12 +369,24 @@ def main():
     print("=" * 66)
     print("Denso master interpolation extractor")
     print("Enter the address of each master function, or leave blank to skip.")
-    print("On the reference A17DTR image these are 000080E4 (3D) and 00008070 (2D).")
-    print("They differ between calibrations -- see the README workflow.")
+    print("They differ between calibrations; the script proposes the best candidates.")
     print("=" * 66)
 
-    addr_3d = ask_address("Master 3D interpolation function", "000080e4")
-    addr_2d = ask_address("Master 2D interpolation function", "00008070")
+    args = list(getScriptArgs())
+    out_dir = args.pop(0) if args else None
+    if len(args) >= 2:
+        addr_3d, addr_2d = toAddr(int(args[0], 16)), toAddr(int(args[1], 16))
+    else:
+        found_3d, found_2d = detect_masters(program)
+        if out_dir is not None:
+            addr_3d = toAddr(found_3d) if found_3d is not None else None
+            addr_2d = toAddr(found_2d) if found_2d is not None else None
+        else:
+            addr_3d = ask_address("Master 3D interpolation function",
+                                  "%08x" % found_3d if found_3d is not None else "")
+            addr_2d = ask_address("Master 2D interpolation function",
+                                  "%08x" % found_2d if found_2d is not None else "")
+    print("Using 3D %s, 2D %s" % (addr_3d, addr_2d))
 
     if addr_3d is None and addr_2d is None:
         print("Nothing to do.")
@@ -335,11 +400,13 @@ def main():
     infer_widths(results_3d + results_2d)
 
     if results_3d:
-        save = askFile("Save 3D maps (CSV)", "Save")
-        write_csv(save.getAbsolutePath(), results_3d, is_3d=True)
+        path = (os.path.join(out_dir, "3d_maps_review.csv") if out_dir is not None
+                else askFile("Save 3D maps (CSV)", "Save").getAbsolutePath())
+        write_csv(path, results_3d, is_3d=True)
     if results_2d:
-        save = askFile("Save 2D curves (CSV)", "Save")
-        write_csv(save.getAbsolutePath(), results_2d, is_3d=False)
+        path = (os.path.join(out_dir, "2d_maps_review.csv") if out_dir is not None
+                else askFile("Save 2D curves (CSV)", "Save").getAbsolutePath())
+        write_csv(path, results_2d, is_3d=False)
 
     print("=" * 66)
     print("Done. {} 3D maps, {} 2D curves.".format(len(results_3d), len(results_2d)))

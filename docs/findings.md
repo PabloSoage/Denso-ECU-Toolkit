@@ -41,7 +41,13 @@ Three properties of the call sites drive the design of `Scripts/`:
 
 ## 2. Descriptor layout
 
-### 3D map — 16 bytes
+The master functions read more of the descriptor than its pointers: an element
+type and a factor/offset pair. What they return is `offset + raw * factor`, so
+every map's physical unit is stored next to its dimensions. Read from the
+decompiled master functions of **two calibrations** (this image at
+`0x80E4`/`0x8070`, and `NCLSW420AX36` at `0x7128`/`0x70B4`; same layout in both).
+
+### 3D map — 28 bytes
 
 | Offset | Type | Field |
 |---|---|---|
@@ -50,26 +56,49 @@ Three properties of the call sites drive the design of `Scripts/`:
 | `0x04` | `u32` | pointer to X axis |
 | `0x08` | `u32` | pointer to Y axis |
 | `0x0C` | `u32` | pointer to Z data |
+| `0x10` | `u8`  | element type (below) |
+| `0x14` | `f32` | factor |
+| `0x18` | `f32` | offset |
 
-### 2D curve — 12 bytes
+### 2D curve — 20 bytes
 
 | Offset | Type | Field |
 |---|---|---|
 | `0x00` | `u16` | `Size_X` (points) |
-| `0x02` | `u16` | padding / alignment |
+| `0x02` | `u8`  | element type (below) |
+| `0x03` | `u8`  | not used by the master function |
 | `0x04` | `u32` | pointer to X axis |
 | `0x08` | `u32` | pointer to curve data |
+| `0x0C` | `f32` | factor |
+| `0x10` | `f32` | offset |
+
+### Element type
+
+The type byte is also the offset into the table of element readers. The readers
+are byte-identical in both calibrations; each one's load instruction says what
+it reads:
+
+| Type | Reader loads | Element | Factor/offset |
+|---|---|---|---|
+| `0x00` | `fmov.s` | `f32` | not applied |
+| `0x04` | `mov.b` + `extu.b` | `u8` | applied |
+| `0x08` | `mov.w` + `extu.w` | `u16` | applied |
+| `0x0C` | `mov.b` (sign-extended) | `s8` | applied |
+| `0x10` | `mov.w` (sign-extended) | `s16` | applied |
+
+Axes are always `f32`.
 
 **Invariant used as a filter:** `data > axis_x` (and `> axis_y` for 3D). Axes
 precede their data in the layout throughout the ROM. Combined with a check that
 all three pointers land in initialised ROM, this is what keeps the heuristic
 scanner's false-positive rate workable.
 
-**What the descriptor does not encode: the element width.** It has to be
-inferred. The extractors sort every data block by address and divide the gap to
-the next block by the element count; when that lands exactly on 1, 2 or 4 bytes
-it is reported in the `Inferred_Width` column. Padding between blocks makes the
-gap an upper bound, so a non-dividing gap is left blank rather than guessed at.
+> **Corrected.** An earlier version of this section said the descriptor does not
+> encode the element width and that it has to be inferred from the gap to the
+> next data block. It does encode it, in the type byte. The `Inferred_Width`
+> column is still written by the extractor, but the descriptor is the authority:
+> `viewer/core/descriptor.py` decodes it, and `tools/apply_descriptor_formats.py`
+> stores format, factor and offset for every map in a project.
 
 ---
 
@@ -179,6 +208,11 @@ result is a dataflow lead rather than proof of a DTC.
 * **`0x000449C4`** — VNT or EGR? If this A17DTR calibration really does contain
   vane control, that is a data point for the variable-vs-fixed geometry question
   across the A17DT* family.
-* **The checksum block has not been located.** Until it is, the viewer must not
-  and does not claim to produce a flashable image. See
+* **The checksum block has not been located** in this image. Until it is, the
+  viewer must not and does not claim to produce a flashable image. See
   `viewer/core/integrity.py`.
+  On a second calibration (`NCLSW420AX36`) there is a header at `0x13FF50`,
+  duplicated at `0x13FF5C`: `u32 start = 0x0C0000`, `u32 end = 0x13FF4F`, `u16 cks`,
+  `u16 0xF7A1`. The 16-bit sum of `start..end` plus `cks` is `0x5157` on two
+  independent reads of that ECU. This image has no header of that shape, so the
+  rule is not generalised and nothing in the toolkit relies on it.

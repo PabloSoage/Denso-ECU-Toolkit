@@ -12,7 +12,7 @@ from contextlib import contextmanager
 import numpy as np
 import pandas as pd
 
-from . import formats
+from . import descriptor, formats
 from .integrity import export_report
 from .state import Baseline, MapMode
 
@@ -318,6 +318,43 @@ class DataManager:
             return ""
         self.custom_map_settings.setdefault(key, {}).update(values)
         return key
+
+    def apply_descriptor_formats(self, overwrite=False):
+        """Set each map's format, factor and offset from its own descriptor.
+
+        Works on the loaded catalogue (``self.df``): every 2D/3D row with a
+        ``Struct_Addr`` is decoded with ``viewer.core.descriptor`` and the result
+        stored as a per-map override, so it is saved with the project. Rows that
+        already have an override are left alone unless ``overwrite`` is set.
+
+        Returns ``(applied, kept, failed)``; ``failed`` lists ``(struct, reason)``.
+        """
+        data = self.get_bin_data()
+        applied, kept, failed = 0, 0, []
+        if self.df.empty or not data:
+            return applied, kept, failed
+        for _, row in self.df.iterrows():
+            map_type = row.get("Map_Type", "3d")
+            if map_type not in ("3d", "2d"):
+                continue
+            struct_hex = _clean_addr(row.get("Struct_Addr", ""))
+            address = parse_address(struct_hex)
+            if address is None:
+                continue
+            if self.custom_settings_for(row) and not overwrite:
+                kept += 1
+                continue
+            try:
+                decoded = descriptor.read(data, address, is_3d=(map_type == "3d"))
+            except descriptor.DescriptorError as exc:
+                failed.append((struct_hex, str(exc)))
+                continue
+            if _clean_addr(f"{decoded.data:08X}") != _clean_addr(row.get("Data_Addr", "")):
+                failed.append((struct_hex, "descriptor data pointer does not match Data_Addr"))
+                continue
+            self.set_custom_setting(row, **decoded.overrides())
+            applied += 1
+        return applied, kept, failed
 
     def _normalise_catalogue(self, df, map_type):
         """Bring one CSV into the internal schema, accepting old and new headers.

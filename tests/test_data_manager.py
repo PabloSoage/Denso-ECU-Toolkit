@@ -520,3 +520,63 @@ class TestBuildColorMap:
     def test_array_is_integer_typed(self, manager):
         manager.build_color_map()
         assert manager.map_array.dtype == np.int32
+
+
+# ---------------------------------------------------------------------------
+# Formats from descriptors
+# ---------------------------------------------------------------------------
+
+DESC_3D_ADDR = 0x380
+DESC_2D_ADDR = 0x3A0
+
+
+@pytest.fixture
+def described(tmp_path):
+    """The test binary plus one 3D and one 2D descriptor pointing at its tables."""
+    data = bytearray(build_binary())
+    data[DESC_3D_ADDR:DESC_3D_ADDR + 0x1C] = struct.pack(
+        ">HHIIIB3xff", 4, 3, AXIS_X_ADDR, AXIS_Y_ADDR, MAP_ADDR, 0x08, 0.5, -10.0)
+    data[DESC_2D_ADDR:DESC_2D_ADDR + 0x14] = struct.pack(
+        ">HBBIIff", 4, 0x10, 0, CURVE_AXIS_ADDR, CURVE_ADDR, 0.25, 0.0)
+    path = tmp_path / "described.bin"
+    path.write_bytes(bytes(data))
+    dm = DataManager()
+    dm.bin_path = str(path)
+    assert dm.load_binary()[0]
+    dm.df = pd.DataFrame([
+        map_row(Struct_Addr=f"{DESC_3D_ADDR:08X}"),
+        curve_row(Struct_Addr=f"{DESC_2D_ADDR:08X}"),
+    ])
+    return dm
+
+
+class TestDescriptorFormats:
+    def test_applies_format_factor_and_offset(self, described):
+        applied, kept, failed = described.apply_descriptor_formats()
+        assert (applied, kept, failed) == (2, 0, [])
+        s3 = described.custom_settings_for(described.df.iloc[0])
+        s2 = described.custom_settings_for(described.df.iloc[1])
+        assert s3 == {"z_format": ">H", "factor": 0.5, "offset": -10.0}
+        assert s2 == {"z_format": ">h", "factor": 0.25, "offset": 0.0}
+
+    def test_existing_overrides_are_kept(self, described):
+        described.set_custom_setting(described.df.iloc[0], factor=9.0)
+        applied, kept, _ = described.apply_descriptor_formats()
+        assert (applied, kept) == (1, 1)
+        assert described.custom_settings_for(described.df.iloc[0]) == {"factor": 9.0}
+
+    def test_overwrite_replaces_them(self, described):
+        described.set_custom_setting(described.df.iloc[0], factor=9.0)
+        applied, kept, _ = described.apply_descriptor_formats(overwrite=True)
+        assert (applied, kept) == (2, 0)
+        assert described.custom_settings_for(described.df.iloc[0])["factor"] == 0.5
+
+    def test_pointer_mismatch_is_reported_not_applied(self, described):
+        described.df.loc[0, "Data_Addr"] = "00000210"
+        applied, _, failed = described.apply_descriptor_formats()
+        assert applied == 1
+        assert failed and "does not match" in failed[0][1]
+
+    def test_rows_without_descriptor_are_skipped(self, manager):
+        manager.df = pd.DataFrame([curve_row()])
+        assert manager.apply_descriptor_formats() == (0, 0, [])
