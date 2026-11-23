@@ -90,3 +90,48 @@ def test_checksum_support_is_off():
     known-good pair of images."""
     assert integrity.CHECKSUM_SUPPORT is False
     assert "NOT" in integrity.CHECKSUM_WARNING
+
+
+def _image_with_cal_header(fill=0x11, corrupt=False):
+    """A synthetic image just large enough for the header at 0x13FF50."""
+    img = bytearray(0x140000)
+    start, end = 0x0C0000, 0x13FF4F
+    for i in range(start, start + 0x100):
+        img[i] = (i * 7 + fill) & 0xFF
+    header = start.to_bytes(4, "big") + end.to_bytes(4, "big")
+    img[0x13FF50:0x13FF58] = header
+    img[0x13FF5C:0x13FF64] = header
+    total = sum(int.from_bytes(img[i:i + 4], "big") for i in range(start, end + 1, 4))
+    cks = (integrity.CAL_CHECKSUM_MAGIC - total) & 0xFFFFFFFF
+    img[0x13FF58:0x13FF5C] = cks.to_bytes(4, "big")
+    img[0x13FF64:0x13FF68] = cks.to_bytes(4, "big")
+    if corrupt:
+        img[start + 3] ^= 0x01
+    return img
+
+
+class TestCalChecksumStatus:
+    def test_valid_header(self):
+        st = integrity.cal_checksum_status(_image_with_cal_header())
+        assert st["ok"] and st["copies_match"]
+        assert (st["start"], st["end"]) == (0x0C0000, 0x13FF4F)
+
+    def test_edit_in_range_breaks_it(self):
+        st = integrity.cal_checksum_status(_image_with_cal_header(corrupt=True))
+        assert st["ok"] is False
+        assert st["stored"] != st["computed"]
+
+    def test_header_is_part_of_the_check_only_via_its_copy(self):
+        img = _image_with_cal_header()
+        img[0x13FF64] ^= 0xFF  # damage the duplicate only
+        st = integrity.cal_checksum_status(img)
+        assert st["ok"] is True and st["copies_match"] is False
+
+    def test_no_header(self):
+        assert integrity.cal_checksum_status(bytes(0x140000)) is None
+
+    def test_short_image(self):
+        assert integrity.cal_checksum_status(bytes(0x1000)) is None
+
+    def test_verify_only_does_not_enable_support(self):
+        assert integrity.CHECKSUM_SUPPORT is False

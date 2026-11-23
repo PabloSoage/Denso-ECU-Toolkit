@@ -211,8 +211,20 @@ result is a dataflow lead rather than proof of a DTC.
 * **The checksum block has not been located** in this image. Until it is, the
   viewer must not and does not claim to produce a flashable image. See
   `viewer/core/integrity.py`.
-  On a second calibration (`NCLSW420AX36`) there is a header at `0x13FF50`,
-  duplicated at `0x13FF5C`: `u32 start = 0x0C0000`, `u32 end = 0x13FF4F`, `u16 cks`,
-  `u16 0xF7A1`. The 16-bit sum of `start..end` plus `cks` is `0x5157` on two
-  independent reads of that ECU. This image has no header of that shape, so the
-  rule is not generalised and nothing in the toolkit relies on it.
+  On other releases there is a header at `0x13FF50`, duplicated at `0x13FF5C`:
+  `u32 start = 0x0C0000`, `u32 end = 0x13FF4F` (inclusive), `u32 cks`, with
+
+  ```
+  cks = (0x5AA5A55A - sum of the big-endian u32 words of start..end) & 0xFFFFFFFF
+  ```
+
+  > **Corrected.** An earlier version read the last field as `u16 cks` + `u16 0xF7A1`
+  > with a 16-bit sum. It is one 32-bit field: the `0xF7A1` was just the low half of
+  > that image's checksum. The rule above holds on every unmodified image checked:
+  > 12 distinct calibrations of four releases (`NCLSW420AX36`, `AX39NCLSW440`,
+  > `AZ03NCLNP000`, `AZ07NCLNP030`); an edited image whose checksum was not updated
+  > fails it.
+
+  This image has no header of that shape. `viewer/core/integrity.py`
+  (`cal_checksum_status`) can *verify* the header where it exists; nothing in the
+  toolkit recomputes it, and `CHECKSUM_SUPPORT` stays off.

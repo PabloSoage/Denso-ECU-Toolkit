@@ -1,14 +1,17 @@
 """Binary integrity: what changed, and what the toolkit does *not* do about it.
 
 The viewer can patch a calibration and write it back out. It cannot recompute
-the ECU's checksums, because the checksum block of the Denso SH705x family has
-not been located in this firmware (see ``docs/findings.md``). Flashing a
+the ECU's checksums: no checksum block has been located in the reference image (see
+``docs/findings.md``). Other A17DT* releases carry a calibration checksum header that
+``cal_checksum_status`` can *verify*; nothing here recomputes it. Flashing a
 modified image whose checksum no longer matches is how ECUs stop booting.
 
 So the honest contract is: describe the edit precisely, state plainly that the
 checksum was not touched, and make the user acknowledge it. Everything here is
 about producing that description; nothing here silently "fixes" anything.
 """
+
+import struct
 
 CHECKSUM_SUPPORT = False
 """No checksum algorithm is implemented for this platform. Do not flip this to
@@ -59,6 +62,49 @@ def sum32(data, start=0, end=None):
     """
     end = len(data) if end is None else end
     return sum(data[start:end]) & 0xFFFFFFFF
+
+
+CAL_CHECKSUM_HEADER = 0x13FF50
+"""Offset of the calibration checksum header found on several A17DT* images."""
+
+CAL_CHECKSUM_MAGIC = 0x5AA5A55A
+
+
+def cal_checksum_status(data):
+    """Verify (never fix) the calibration checksum header, if the image has one.
+
+    Layout, at ``0x13FF50`` and duplicated at ``0x13FF5C`` (big-endian):
+    ``u32 start``, ``u32 end`` (inclusive), ``u32 cks``, with::
+
+        cks == (0x5AA5A55A - sum of the big-endian u32 words in start..end) & 0xFFFFFFFF
+
+    Holds on every unmodified image checked: 12 distinct calibrations of four software
+    releases (AZ07NCLNP030, AZ03NCLNP000, AX39NCLSW440, NCLSW420AX36), all with
+    ``start = 0x0C0000`` and ``end = 0x13FF4F``. It is a *verification* aid only: it does not make an edited
+    image flashable, and ``CHECKSUM_SUPPORT`` stays False (other blocks may exist).
+
+    Returns ``None`` when no header of that shape is present, otherwise a dict with
+    ``start``, ``end``, ``stored``, ``computed``, ``ok`` (stored == computed) and
+    ``copies_match`` (the duplicate header is identical).
+    """
+    base = CAL_CHECKSUM_HEADER
+    if len(data) < base + 24:
+        return None
+    start, end, stored = (int.from_bytes(data[base + i:base + i + 4], "big") for i in (0, 4, 8))
+    copy = bytes(data[base + 12:base + 24])
+    if not (0 < start < end < base) or (end + 1 - start) % 4:
+        return None
+    count = (end + 1 - start) // 4
+    total = sum(struct.unpack_from(f">{count}I", bytes(data), start))
+    computed = (CAL_CHECKSUM_MAGIC - total) & 0xFFFFFFFF
+    return {
+        "start": start,
+        "end": end,
+        "stored": stored,
+        "computed": computed,
+        "ok": stored == computed,
+        "copies_match": copy == bytes(data[base:base + 12]),
+    }
 
 
 def describe_regions(regions, max_listed=12):
