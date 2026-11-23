@@ -7,6 +7,11 @@ standalone PyQt6 viewer for reading, comparing and patching them.
 This is not a one-click tuning tool. It is instrumentation — it finds structure
 in a firmware image and shows it to you.
 
+![The map viewer: catalogue on the left, a 3D map on the right](docs/img/map-viewer.png)
+
+*The screenshots use a synthetic image: the addresses and tags are the published
+catalogue, the values are made up. No firmware is shown.*
+
 ---
 
 ## Why the map discovery works
@@ -221,6 +226,8 @@ cursor) and PyQtGraph + OpenGL (high frame rate, no hover).
 
 **Views** — Plot, Table, or synchronised Split.
 
+![Split view: the surface and its table, with a profile per row](docs/img/split-view.png)
+
 **Formats** — parse as 8/16/32-bit or float, signed or unsigned, either byte
 order, globally or per map. Factors and offsets convert raw values to bar, Nm,
 mg/stroke, °C.
@@ -228,9 +235,13 @@ mg/stroke, °C.
 **Smart Axis Filter** — monotonicity test over the discrete derivative of each
 axis; the primary tool for sifting heuristic output.
 
+![A 2D curve](docs/img/curve-2d.png)
+
 **Hex dump** — the whole ROM in a lazy table model. 3D maps in blue, 2D curves
 in green, custom tags in orange, each outlined with its label. Right-click any
 selection to tag it or give it dimensions.
+
+![Hex dump with the map and tag overlays](docs/img/hex-dump.png)
 
 **Comparison** — nine modes: difference against the original, percentage
 difference, against a stored reference map, against an external binary, and
@@ -239,8 +250,12 @@ side-by-side twin views of each.
 **Editing** — type into the table; modified cells turn red, and so do modified
 maps in the list. Export writes the patched image.
 
+![An edited map next to the original, with the changed cells in red](docs/img/compare-twin.png)
+
 > ⚠️ **Checksums are not recalculated.** No checksum block has been located in
-> this firmware, so the toolkit cannot correct one — and does not pretend to.
+> the reference image. Other A17DT* releases have a calibration checksum header,
+> which `viewer/core/integrity.py` can *verify* ([`docs/findings.md`](docs/findings.md) §7)
+> but never corrects.
 > Export shows you exactly which byte ranges changed and makes you confirm.
 > Run the file through a checksum tool that knows your ECU before flashing, and
 > have a bootloader recovery path.
@@ -251,7 +266,7 @@ maps in the list. Export writes the patched image.
 
 ```
 Scripts/                    Ghidra Jython scripts (setup, extraction, decompile, RAM xrefs)
-tools/                      command-line helpers (descriptor formats, dumps, comparison)
+tools/                      command-line helpers (descriptor formats, dumps, comparison, README screenshots)
 viewer/
   core/                     data model — no Qt imports
     state.py                the enums that define application state
@@ -266,6 +281,7 @@ viewer/
     managers/               list, rendering, mouse
     dialogs/                modal dialogs
 docs/findings.md            reverse-engineering results
+docs/img/                   README screenshots (tools/screenshots.py regenerates them)
 tests/                      unit tests for viewer.core
 research/                   private data (gitignored, see above)
 ```
